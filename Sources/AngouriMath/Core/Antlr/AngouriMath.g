@@ -243,8 +243,49 @@ Nodes end
 
 */
 
+/* `a => a + 3`, and `a b => a + b` for `a => b => a + b`. Lowest priority of anything, and
+   right-associative through the recursion on `expression`, so the body runs to the end of what
+   is being parsed: `a => a + 3` is `a => (a + 3)` and never `(a => a) + 3`.
+
+   The parameters are VARIABLE tokens rather than expressions, which is what makes `a 3 => 3`
+   invalid as the plan says it should be: `3` cannot match, the alternative fails, and what is
+   left is not a parse.
+
+   The body is built exactly as `lambda(...)` builds it, through Binding, so that the two spell
+   the same thing -- including the case a lambda's Variable-typed parameter cannot state
+   directly, an index called `i`. https://github.com/asc-community/AngouriMath/issues/976 */
 expression returns[Entity value]
     : s = provided_expression { $value = $s.value; }
+      ('=>' b = expression
+        {
+            /* The parameters are read back out of an ordinary expression rather than matched as
+               a list of names, and that is about what the parser can predict rather than about
+               taste. Written as `names+ '=>' body | expression`, both alternatives begin with a
+               name and stay viable through a second one -- juxtaposition being multiplication --
+               so `a b => a + b` was decided as a product before the arrow was ever reached, and
+               came back "mismatched input '=>'". Sharing the left side leaves one decision, taken
+               on the token after it.
+
+               So `a b c` arrives here as the product it parsed as, and its factors in order are
+               the parameters. Anything that is not a name fails here instead of failing to
+               parse: `a 3 => 3`, which the plan calls invalid, raises rather than being read as
+               a lambda over `a` and `3`.
+
+               Through Binding, exactly as `lambda(...)` builds it, so the two spell the same
+               thing -- including an index called `i`, which lexes as the imaginary unit and can
+               therefore never arrive as a Variable token at all.
+               https://github.com/asc-community/AngouriMath/issues/976 */
+            Entity lambdaBody = $b.value;
+            var parameters = ($value is Mulf ? Mulf.LinearChildren($value) : new[] { $value }).ToList();
+            foreach (var x in ((IEnumerable<Entity>)parameters).Reverse())
+            {
+                var bound = AngouriMath.Core.Binding.Of(x);
+                if (bound.Name is not Variable v) throw new InvalidArgumentParseException($"Lambda is expected to have valid parameters, {x} encountered instead");
+                lambdaBody = bound.In(lambdaBody).LambdaOver(v);
+            }
+            $value = lambdaBody;
+        }
+      )?
     ;
 
 
@@ -434,9 +475,26 @@ atom returns[Entity value]
     | 'domain(' args = function_arguments ')' 
         { 
             Assert("domain", 2, $args.list.Count); 
-            if ($args.list[1] is not SpecialSet ss)
+            // `Any` is the unrestricted codomain. It is read here rather than lexed as a
+            // keyword, because a literal in a parser rule becomes a global lexer token and
+            // would reserve the name everywhere -- `Any + 1` stopped parsing when that was
+            // tried. It is not a SpecialSet either: there is no node for "no restriction", see
+            // SpecialSet.Create(Domain). Reading it in this one position commits to a spelling
+            // without deciding whether there is a universal *set*, which is #996.
+            // https://github.com/asc-community/AngouriMath/issues/1048
+            // The argument is folded to a rational literal first. A codomain is a property of a
+            // node rather than a node of its own, so `1/2` annotated here and `1/2` written bare
+            // have to become the same shape before the annotation lands -- otherwise the sweep
+            // that folds the rest of the tree meets an annotated quotient it cannot tell from an
+            // unannotated one, and `domain(1/2, CC)` loses what it was asked for.
+            // https://github.com/asc-community/AngouriMath/issues/1048
+            var annotated = ParsingHelpers.RationalLiteral($args.list[0]);
+            if ($args.list[1] is Variable { Name: "Any" })
+                $value = annotated.WithCodomain(AngouriMath.Core.Domain.Any);
+            else if ($args.list[1] is not SpecialSet ss)
                 throw new InvalidArgumentParseException($"Unrecognized special set {$args.list[1].Stringize()}");
-            $value = $args.list[0].WithCodomain(ss.ToDomain());
+            else
+                $value = annotated.WithCodomain(ss.ToDomain());
         }
     | 'piecewise(' args = function_arguments ')'
         {
@@ -495,6 +553,6 @@ NAN: 'NaN' ;
 
 VARIABLE: ('a'..'z'|'A'..'Z'|'\u0370'..'\u03FF'|'\u1F00'..'\u1FFF'|'\u0400'..'\u04FF')+ ('_' ('a'..'z'|'A'..'Z'|'0'..'9'|'\u0370'..'\u03FF'|'\u1F00'..'\u1FFF'|'\u0400'..'\u04FF')+)? ;
   
-COMMENT: ('//' ~[\r\n]* '\r'? '\n' | '/*' .*? '*/') -> skip ;
+COMMENT: ('//' ~[\r\n]* ('\r'? '\n')? | '/*' .*? '*/') -> skip ;
     
 WS : (' ' | '\t')+ -> skip ;

@@ -22,8 +22,17 @@ If you aren't sure about what to add, you may want to check the current projects
    `IsAotCompatible`, what checks it, and the four shapes of run-time name lookup that break it
 8. <a href="./coding_rules.md">Coding rules</a> — sealed-or-abstract, immutability, and what may be
    made `public`
-8. <a href="./Packaging.md">What ships in which package</a> — the four published packages, what the
+9. <a href="./Packaging.md">What ships in which package</a> — the four published packages, what the
    kernel measurably costs a caller, and the rule deciding where the next capability goes
+10. <a href="./NodeContract.md">What a node type has to implement</a> — the eleven abstract members
+   of `Entity`, which five an assembly outside the kernel cannot reach, and the decision on whether a
+   domain package may define a node type at all
+11. <a href="./ReversibleRules.md">Reading a rewrite rule backwards</a> — what a rule has to carry
+   before it can be read the other way, which rules can carry it, and what the mechanism costs the
+   fast path
+12. <a href="./WritingARule.md">Writing a rewrite rule</a> — the seven things a rule carries, why its
+   name is a sentence rather than an identifier, what the pattern language can and cannot build, and
+   which tests will check it
 
 See also <a href="../../../../BREAKING-CHANGES.md">BREAKING-CHANGES.md</a>, where a change that makes
 the same input give a different answer is recorded, and

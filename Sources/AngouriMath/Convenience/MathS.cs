@@ -15,6 +15,7 @@ using AngouriMath.Convenience;
 using AngouriMath.Core.Multithreading;
 using System.Threading;
 using AngouriMath.Core.Exceptions;
+using AngouriMath.Core.Budgets;
 
 namespace AngouriMath
 {
@@ -190,6 +191,49 @@ namespace AngouriMath
         /// { ln(-sqrt(-2) / (-1 - i)) / i / a, ln(sqrt(-2) / (-1 - i)) / i / a }
         /// </example>
         public static Set SolveEquation(Entity equation, Variable var) => EquationSolver.Solve(equation, var);
+
+        /// <summary>
+        /// Solves a first-order linear ordinary differential equation
+        /// <a href="https://en.wikipedia.org/wiki/Linear_differential_equation"/> by its
+        /// integrating factor, or returns <see langword="null"/> where it cannot.
+        /// </summary>
+        /// <param name="equation">
+        /// The equation, read as equal to zero, written in terms of the unknown function applied
+        /// to its variable. The unknown has to be an application — <c>apply(y, x)</c> — rather
+        /// than a bare variable, because <c>derivative(y, x)</c> is <c>0</c>: a variable does not
+        /// depend on <c>x</c>, and the library is right about that.
+        /// </param>
+        /// <param name="function">The name of the unknown function, <c>y</c> above.</param>
+        /// <param name="variable">The name it is a function of, <c>x</c> above.</param>
+        /// <returns>
+        /// The general solution, carrying one arbitrary constant, or <see langword="null"/> where
+        /// the equation is not first-order linear in the unknown, or where either of the two
+        /// integrals the method needs has no closed form.
+        /// </returns>
+        /// <example>
+        /// <code>
+        /// using System;
+        /// using AngouriMath;
+        /// using AngouriMath.Extensions;
+        ///
+        /// // y' + y = 1
+        /// var equation = "derivative(apply(y, x), x) + apply(y, x) - 1".ToEntity();
+        /// Console.WriteLine(MathS.SolveOde(equation, "y", "x"));
+        /// </code>
+        /// Prints
+        /// <code>
+        /// 1 + C_1 * e ^ (-x)
+        /// </code>
+        /// </example>
+        /// <remarks>
+        /// Declining is a legitimate answer here and a common one: the method is exact where it
+        /// applies, and where either integral does not come out there is no approximation to
+        /// offer in its place. <c>y' + y = e^(x^2)</c> is declined for exactly that reason.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/241">#241</a>
+        /// </remarks>
+        public static Entity? SolveOde(Entity equation, Variable function, Variable variable)
+            => Functions.Algebra.OrdinaryDifferentialEquation
+                .SolveFirstOrderLinear(equation, function, variable);
 
         /// <summary>
         /// Solves a boolean expression. That is, finds all values for
@@ -4807,8 +4851,18 @@ namespace AngouriMath
         /// 4
         /// </code>
         /// </example>
+        /// <remarks>
+        /// A vector of no entries is refused rather than built. It used to leak a
+        /// <see cref="IndexOutOfRangeException"/>, which is outside the hierarchy
+        /// <c>Docs/Usage/Exceptions.md</c> documents — so a caller catching
+        /// <c>AngouriMathBaseException</c> did not catch it.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1028">#1028</a>
+        /// </remarks>
         public static Matrix Vector(params Entity[] values)
-            => new Matrix(GenTensor.CreateTensor(new(values.Length, 1), arr => values[arr[0]]));
+            => values.Length is 0
+                ? throw new InvalidMatrixOperationException(
+                    "a vector needs at least one entry; there is no 0x1 matrix here")
+                : new Matrix(GenTensor.CreateTensor(new(values.Length, 1), arr => values[arr[0]]));
 
         /// <summary>
         /// Creates a zero square matrix
@@ -5651,7 +5705,9 @@ namespace AngouriMath
             }
 
             /// <summary>
-            /// If you only need analytical solutions and an empty set if no analytical solutions were found, disable Newton's method
+            /// If you only need analytical solutions, disable Newton's method. What comes back
+            /// where there are none is the equation itself as a set builder: the empty set
+            /// would say the equation has no roots, which is a claim nothing established.
             /// </summary>
             /// <example>
             /// <code>
@@ -5670,7 +5726,7 @@ namespace AngouriMath
             /// { 1.0050669478588620808778841819730587303638458251953125 + 0.93725915669289194820379407246946357190608978271484375i,
             /// ... omitting here most of the output, because it's huge
             /// }
-            /// {  } // nothing was found for 5-degree polynomial without numeric solution
+            /// { x : x ^ 5 + 3 * x = -1 } // no analytical solution was found for this quintic
             /// </code>
             /// </example>
             public static Setting<bool> AllowNewton { get; } = true;
@@ -5732,8 +5788,8 @@ namespace AngouriMath
             ///     expr => expr.Nodes.Count(node => node is Entity.Divf)
             /// );
             /// 
-            /// Console.WriteLine(FromString("a / b + b / c", useCache: false).SimplifiedRate);
-            /// Console.WriteLine(FromString("a / b + b / c", useCache: false).Simplify().SimplifiedRate);
+            /// Console.WriteLine("a / b + b / c".ToEntity().SimplifiedRate);
+            /// Console.WriteLine("a / b + b / c".ToEntity().Simplify().SimplifiedRate);
             /// </code>
             /// Prints
             /// <code>
@@ -5743,14 +5799,25 @@ namespace AngouriMath
             /// 1
             /// </code>
             /// By default criteria it cannot simplify it further, however, the custom one
-            /// it simplified from 2 to 1. 
+            /// it simplified from 2 to 1.
             /// </example>
             /// <remarks>
+            /// <para>
             /// The function itself lives on <see cref="CostModel.Default"/>, with the named
             /// alternatives beside it — <see cref="CostModel.SmallestTree"/>,
             /// <see cref="CostModel.FewestDivisions"/>, <see cref="CostModel.FewestRadicals"/>.
             /// It is referenced rather than repeated so the setting's default and the model
             /// cannot drift apart.
+            /// </para>
+            /// <para>
+            /// The second half of the example above used to need
+            /// <c>FromString(expr, useCache: false)</c>, because a parsed expression is cached by
+            /// its text and <see cref="Entity.SimplifiedRate"/> cached one rate per instance —
+            /// so the number computed under the default criteria was handed back under this one.
+            /// That is fixed: a rate is cached only while nobody has scoped this setting, and a
+            /// scoped criteria is computed afresh. Reading a rate under a criteria of your own no
+            /// longer needs the parser cache defeated to be right.
+            /// </para>
             /// </remarks>
             public static Setting<Func<Entity, double>> ComplexityCriteria { get; } =
                 new Func<Entity, double>(CostModel.DefaultCost);
@@ -5839,6 +5906,43 @@ namespace AngouriMath
             /// </example>
             /// </remarks>
             public static Setting<Domain> Codomain { get; } = Domain.Complex;
+
+            /// <summary>
+            /// What an algorithm that can run away is allowed to spend before it declines.
+            /// </summary>
+            /// <remarks>
+            /// <para>
+            /// <b>Leaving this alone is not the same as setting it to
+            /// <see cref="WorkBudget.Unlimited"/>.</b> Unset, each algorithm keeps the budget
+            /// it chose for itself -- the Gr&#246;bner path bounds itself by five seconds and
+            /// by five structural ceilings, and did so before this setting existed. Set, this
+            /// replaces those defaults wherever a budget is honoured, so
+            /// <see cref="WorkBudget.Unlimited"/> here means "do not stop", which for a
+            /// doubly-exponential algorithm means what it says.
+            /// </para>
+            /// <para>
+            /// A budget in <see cref="WorkBudget.Steps"/> is reproducible and one in
+            /// <see cref="WorkBudget.Time"/> is not, so a caller who needs the same answer on
+            /// every machine sets the first and leaves the second
+            /// <see langword="null"/>. Which one stopped a computation is reported through
+            /// <see cref="BudgetRecording"/>.
+            /// (<a href="https://github.com/asc-community/AngouriMath/issues/373">#373</a>)
+            /// </para>
+            /// <para>
+            /// It is honoured only where an algorithm asks -- today that is the Gr&#246;bner
+            /// system solver. Everything else in the library bounds itself by ceilings of its
+            /// own that this does not reach, so setting it does not make an arbitrary call
+            /// bounded.
+            /// </para>
+            /// </remarks>
+            /// <example>
+            /// <code>
+            /// using var _ = MathS.Settings.Budget.Set(new WorkBudget { Steps = 100_000 });
+            /// using var recording = BudgetRecording.Start();
+            /// var solutions = MathS.Equations("x2 + y2 - 4", "x y - 1").Solve("x", "y");
+            /// </code>
+            /// </example>
+            public static Setting<WorkBudget> Budget { get; } = WorkBudget.Unlimited;
         }
 
         /// <summary>Returns an <see cref="Entity"/> in polynomial order if possible</summary>
@@ -5907,8 +6011,12 @@ namespace AngouriMath
         {
             var sb = new System.Text.StringBuilder();
             sb.Append("import sympy\n\n");
+            // Name rather than Stringize: a variable narrowed with WithCodomain prints as
+            // `domain(x, ZZ)` since https://github.com/asc-community/AngouriMath/issues/1022, and
+            // that is not a Python identifier. The codomain itself does not survive the export --
+            // SymPy would spell it as an assumption on the symbol, which nothing here emits yet.
             foreach (var f in expr.Vars)
-                sb.Append($"{f.Stringize()} = sympy.Symbol('{f.Stringize()}')\n");
+                sb.Append($"{f.Name} = sympy.Symbol('{f.Name}')\n");
             sb.Append('\n');
             sb.Append("expr = ").Append(expr.ToSymPy());
             return sb.ToString();
@@ -6855,12 +6963,20 @@ namespace AngouriMath
         /// <param name="to">The last value of the index, inclusive.</param>
         /// <returns>
         /// The sum written out where the bounds are concrete integers and there are not too many
-        /// terms, and an unevaluated <see cref="Entity.Summationf"/> otherwise — so a symbolic
-        /// bound is carried rather than refused.
+        /// terms; a closed form where the body is a polynomial in the index, whatever the bounds;
+        /// and an unevaluated <see cref="Entity.Summationf"/> otherwise — so a body this cannot
+        /// read is carried rather than refused.
         /// </returns>
         /// <remarks>
+        /// <para>
         /// An empty range sums to <c>0</c>, which is stated rather than left to fall out of the
         /// loop. <a href="https://github.com/asc-community/AngouriMath/issues/248">#248</a>
+        /// </para>
+        /// <para>
+        /// That convention is why a closed form carries a condition: <c>sum(k, k, 1, n)</c> is
+        /// <c>(n + n^2)/2</c> only where <c>n >= 0</c>, the range being empty and the sum
+        /// <c>0</c> below that while the polynomial is not.
+        /// </para>
         /// </remarks>
         /// <example>
         /// <code>
@@ -6883,14 +6999,27 @@ namespace AngouriMath
         /// <summary>
         /// A product of <paramref name="expr"/> as <paramref name="var"/> runs from
         /// <paramref name="from"/> to <paramref name="to"/> inclusive. Mirrors
-        /// <see cref="Sum(Entity, Entity, Entity, Entity)"/> exactly, with an empty range
-        /// multiplying to <c>1</c>.
+        /// <see cref="Sum(Entity, Entity, Entity, Entity)"/>, with an empty range multiplying to
+        /// <c>1</c>.
         /// </summary>
         /// <param name="expr">The factor. It may mention <paramref name="var"/>.</param>
         /// <param name="var">The index, which this binds.</param>
         /// <param name="from">The first value of the index.</param>
         /// <param name="to">The last value of the index, inclusive.</param>
-        /// <returns>The product written out where it can be, and an unevaluated node otherwise.</returns>
+        /// <returns>
+        /// The product written out where the bounds are concrete integers and there are not too
+        /// many terms; a closed form where the factor is a <b>monomial</b> in the index — a
+        /// narrower class than the sum's, a product having no linearity to take a sum of terms
+        /// apart with; and an unevaluated node otherwise.
+        /// </returns>
+        /// <remarks>
+        /// The closed form's condition is <c>to &gt;= from</c> rather than the sum's
+        /// <c>to &gt;= from - 1</c>: at the empty range itself it would be <c>c ^ 0</c>, which is
+        /// undefined at <c>c = 0</c> where the empty product is <c>1</c>. Where the index is in
+        /// the factor the lower bound must be a concrete integer of at least one, since the
+        /// answer is a ratio of factorials and <c>factorial</c> has no value at the negative
+        /// integers.
+        /// </remarks>
         /// <example>
         /// <code>
         /// using System;

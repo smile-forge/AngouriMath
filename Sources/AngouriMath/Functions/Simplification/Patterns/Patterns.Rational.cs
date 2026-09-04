@@ -13,7 +13,8 @@ namespace AngouriMath.Functions
 {
     partial class Patterns
     {
-        private static Entity SumOfFractions(Entity expr,
+        /// <remarks>Internal so the data form of this set calls it rather than repeating it.</remarks>
+        internal static Entity SumOfFractions(Entity expr,
             Entity leftNum, Entity leftDen, Entity rightNum, Entity rightDen)
         {
             // a/d + b/d = (a + b)/d. Cross-multiplying instead builds d*d and leaves the
@@ -65,9 +66,19 @@ namespace AngouriMath.Functions
                 Minusf(Divf(var leftNum, var leftDen), Divf(var rightNum, var rightDen))
                     => SumOfFractions(expr, leftNum, leftDen, -rightNum, rightDen),
                 Divf(var num, var den) when num.Vars.Any() && den.Vars.Any()
-                    => PairwiseGrouping(num, den, level).Select(PowerRules).MultiplyAll().InnerSimplified.Replace(CollapseMultipleFractions),
+                    => PairwiseGroupedQuotient(expr, num, den, level),
                 _ => expr
             };
+
+        /// <summary>
+        /// The quotient regrouped pairwise, its factors put through the power rules and
+        /// multiplied back. A method of its own so that the data form of this set calls the same
+        /// code rather than a copy of it.
+        /// </summary>
+        internal static Entity PairwiseGroupedQuotient(
+            Entity whole, Entity num, Entity den, TreeAnalyzer.SortLevel level)
+            => PairwiseGrouping(num, den, level).Select(PowerRules).MultiplyAll()
+                .InnerSimplified.Replace(CollapseMultipleFractions);
 
         /// <summary>n^(p/q) for a q of 2 or more -- a root that is not a whole power.</summary>
         private static bool IsSurd(Entity node)
@@ -116,19 +127,43 @@ namespace AngouriMath.Functions
                 : scaled / Integer.Create(ratio.Denominator);
         }
 
+        /// <summary>
+        /// The two rules of this set, in order. Split into one method each so that the data form
+        /// in <c>MatchedRules</c> calls the same code rather than a copy of it — this set is an
+        /// ordinary method with branches and locals, which the rule registry generator declines,
+        /// so its arms had no other way of becoming addressable.
+        /// </summary>
         internal static Entity RationalizeDenominator(Entity expr)
+            => GatherNumericCoefficientOverASurd(expr) is var gathered && !ReferenceEquals(gathered, expr)
+                ? gathered
+                : MultiplyByTheConjugate(expr);
+
+        /// <summary>
+        /// <c>k * (value / d) -> (k * value) / d</c>, reduced, where the numerator carries a surd
+        /// this rule moved up out of a denominator.
+        /// </summary>
+        /// <remarks>
+        /// Without it a numeric coefficient never meets the divisor: <c>k / (p + sqrt(q))</c> is
+        /// split into <c>k * (1 / (p + sqrt(q)))</c> before this rule runs, so the quotient it
+        /// rewrites has a numerator of 1 and the <c>k</c> stays outside. <c>2 / (3 - sqrt(5))</c>
+        /// came out as <c>2 * (3 + sqrt(5)) / 4</c>, which is longer than what it replaced —
+        /// while <c>1 / (3 - sqrt(5))</c>, with no coefficient to strand, answered correctly all
+        /// along.
+        /// </remarks>
+        internal static Entity GatherNumericCoefficientOverASurd(Entity expr)
         {
-            // k * (value / d) -> (k * value) / d, reduced, where the numerator carries a surd
-            // this rule moved up out of a denominator. Without it a numeric coefficient never
-            // meets the divisor: `k / (p + sqrt(q))` is split into `k * (1 / (p + sqrt(q)))`
-            // before this rule runs, so the quotient it rewrites has a numerator of 1 and the
-            // k stays outside. 2 / (3 - sqrt(5)) came out as `2 * (3 + sqrt(5)) / 4`, which is
-            // longer than what it replaced -- while 1 / (3 - sqrt(5)), with no coefficient to
-            // strand, answered correctly all along.
             if (expr is Mulf(Rational coefficient, Divf(var inner, Rational { IsZero: false } innerDivisor))
                 && inner.Nodes.Any(IsSurd))
                 return ScaleBy(coefficient.ERational.Divide(innerDivisor.ERational), inner);
+            return expr;
+        }
 
+        /// <summary>
+        /// <c>num / (a + b)</c> becomes <c>num * (a - b) / (a^2 - b^2)</c> where that clears a
+        /// surd out of the denominator, and <paramref name="expr"/> where it does not.
+        /// </summary>
+        internal static Entity MultiplyByTheConjugate(Entity expr)
+        {
             if (expr is not Divf(var num, var den))
                 return expr;
             var (a, b) = den switch

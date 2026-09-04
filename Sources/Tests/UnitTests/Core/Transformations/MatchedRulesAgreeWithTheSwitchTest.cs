@@ -5,6 +5,7 @@
 // Website: https://am.angouri.org.
 //
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using AngouriMath;
@@ -32,11 +33,14 @@ namespace AngouriMath.Tests.Core.Transformations
     [Trait("Area", "Core")]
     public sealed class MatchedRulesAgreeWithTheSwitchTest
     {
-        private static readonly string[] Leaves = { "x", "y", "2", "-1", "1/2", "1", "0" };
+        // -2 and -1/2 are here for the sets that key on a negative literal. With -1 as the only
+        // negative leaf a rule about negative powers fired on 7 of 1399 expressions, which is
+        // agreement between two things that barely ran.
+        private static readonly string[] Leaves = { "x", "y", "2", "-1", "-2", "1/2", "-1/2", "1", "0" };
 
         private static readonly string[] Unary =
         {
-            "-({0})", "1 / ({0})", "({0}) ^ 2", "sqrt({0})", "sin({0})", "abs({0})",
+            "-({0})", "1 / ({0})", "({0}) ^ 2", "({0}) ^ (-2)", "sqrt({0})", "sin({0})", "abs({0})",
         };
 
         private static readonly string[] Binary =
@@ -71,21 +75,40 @@ namespace AngouriMath.Tests.Core.Transformations
         }
 
         private static void AssertAgrees(
-            string what, System.Func<Entity, Entity> bySwitch, MatchedRuleSet byData, int leastFirings)
+            string what, System.Func<Entity, Entity> bySwitch, MatchedRuleSet byData, int leastFirings,
+            string[]? extra = null, string[]? firesWhereTheSwitchDoesNot = null)
         {
             var corpus = Corpus();
             Assert.True(corpus.Count > 500, $"the corpus is only {corpus.Count} expressions");
+            // A shape the grammar does not generate is still worth comparing on, where a set keys
+            // on a function the corpus has no leaf for. It is added to the generated corpus and
+            // never in place of it: a hand-written list only proves the cases someone thought of.
+            if (extra is not null)
+                foreach (var source in extra)
+                    corpus.Add(source.ToEntity());
 
             var disagreements = new List<string>();
+            var extraFirings = new List<string>();
             var fired = 0;
             foreach (var expr in corpus)
             {
                 var expected = bySwitch(expr);
                 var actual = byData.ApplyHere(expr);
                 if (!expected.Equals(expr)) fired++;
-                if (!expected.Equals(actual))
-                    disagreements.Add($"{expr.Stringize()}: switch gave {expected.Stringize()}, "
-                        + $"data gave {actual.Stringize()}");
+                if (expected.Equals(actual))
+                    continue;
+                // A rule expressed commutatively can fire where the `switch` misses an
+                // orientation it never wrote out. That is a change rather than a disagreement,
+                // and it is only allowed where the caller names the shape it happens on -- so a
+                // silent divergence is still a failure and a known one is a list to read.
+                if (expected.Equals(expr) && firesWhereTheSwitchDoesNot is not null
+                    && firesWhereTheSwitchDoesNot.Contains(expr.Stringize()))
+                {
+                    extraFirings.Add(expr.Stringize());
+                    continue;
+                }
+                disagreements.Add($"{expr.Stringize()}: switch gave {expected.Stringize()}, "
+                    + $"data gave {actual.Stringize()}");
             }
 
             // The set has to actually fire, or agreement is the agreement of two things that
@@ -95,6 +118,13 @@ namespace AngouriMath.Tests.Core.Transformations
             Assert.True(disagreements.Count == 0,
                 $"{what}: {disagreements.Count} of {corpus.Count} disagreed:\n"
                 + string.Join("\n", disagreements.Take(10)));
+
+            // The other direction, so a named shape cannot outlive the gap it describes: if the
+            // `switch` learns the orientation, this list is wrong and says so.
+            if (firesWhereTheSwitchDoesNot is not null)
+                Assert.Equal(
+                    firesWhereTheSwitchDoesNot.OrderBy(one => one, StringComparer.Ordinal).ToArray(),
+                    extraFirings.Distinct().OrderBy(one => one, StringComparer.Ordinal).ToArray());
         }
 
         [Fact]
@@ -115,6 +145,441 @@ namespace AngouriMath.Tests.Core.Transformations
                 MatchedRules.CollapseMultipleFractions, leastFirings: 50);
 
         /// <summary>
+        /// The first set here whose replacement is <b>code</b>: <c>-1 * n</c> is arithmetic on
+        /// the bound integer, so the rule builds <c>a ^ 3</c> where a pattern would build
+        /// <c>a ^ (-1 * -3)</c>. Agreement over generated expressions is what says the arithmetic
+        /// was done the same way, and there is no other way to check it.
+        /// </summary>
+        [Fact]
+        public void InvertNegativePowersAsDataMatchesTheSwitch()
+            => AssertAgrees("InvertNegativePowers", Patterns.InvertNegativePowers,
+                MatchedRules.InvertNegativePowers, leastFirings: 20);
+
+        /// <summary>
+        /// Two rules, one with a code replacement and one whose sides are both patterns, so this
+        /// is the first set where <see cref="MatchedRule.Reversal"/> differs between the rules of
+        /// one set rather than between sets.
+        /// </summary>
+        [Fact]
+        public void InvertNegativeMultipliersAsDataMatchesTheSwitch()
+            => AssertAgrees("InvertNegativeMultipliers", Patterns.InvertNegativeMultipliers,
+                MatchedRules.InvertNegativeMultipliers, leastFirings: 40);
+
+        /// <summary>
+        /// Four rules whose sides are all patterns, so this set reverses whole. Nothing runs the
+        /// reverse direction today, which is why agreement forward is what is asserted.
+        /// </summary>
+        /// <remarks>
+        /// The generated corpus has no <c>tan</c>, <c>cotan</c>, <c>sec</c> or <c>cosec</c> leaf
+        /// and so fired this set <b>zero</b> times — agreement between two things neither of
+        /// which ran. The shapes are supplied on top of the corpus rather than instead of it.
+        /// </remarks>
+        [Fact]
+        public void NormalTrigonometricFormAsDataMatchesTheSwitch()
+            => AssertAgrees("NormalTrigonometricForm", Patterns.NormalTrigonometricForm,
+                MatchedRules.NormalTrigonometricForm, leastFirings: 12, extra: new[]
+                {
+                    "tan(x)", "cotan(x)", "sec(x)", "cosec(x)",
+                    "tan(x + y)", "cotan(2 * x)", "sec(sqrt(x))", "cosec(-x)",
+                    "tan(1/2)", "cotan(0)", "sec(2)", "cosec(-1)",
+                    "tan(x) + cotan(x)", "sec(x) * cosec(x)", "1 / tan(x)", "sin(tan(x))",
+                });
+
+        /// <summary>
+        /// The reverse of <see cref="MatchedRules.NormalTrigonometricForm"/>, and the set where
+        /// order is most obviously load-bearing: the two named quotients have to be tried before
+        /// the general reciprocal rules, or <c>sin(x) / cos(x)</c> becomes <c>sin(x) * sec(x)</c>.
+        /// </summary>
+        [Fact]
+        public void CollapseTrigonometricFunctionsAsDataMatchesTheSwitch()
+            => AssertAgrees("CollapseTrigonometricFunctions", Patterns.CollapseTrigonometricFunctions,
+                MatchedRules.CollapseTrigonometricFunctions, leastFirings: 25);
+
+        /// <summary>
+        /// The angle-sum identities, both of whose sides are patterns. The corpus has no sum
+        /// inside a sine, so the shapes are given.
+        /// </summary>
+        [Fact]
+        public void ExpansionAsDataMatchesTheSwitch()
+            => AssertAgrees("Expansion", Patterns.ExpandRules,
+                MatchedRules.Expansion, leastFirings: 5, extra: new[]
+                {
+                    "sin(x + y)", "sin(x - y)", "sin(2 + x)", "sin(x - 1/2)",
+                    "sin(x + y) * cos(x - y)", "sin(sin(x) + cos(y))",
+                });
+
+        /// <summary>
+        /// The doubled-angle identities, keyed on literals — <c>1/2</c> and <c>2</c> — which the
+        /// corpus does build but never in this arrangement.
+        /// </summary>
+        [Fact]
+        public void ExpandTrigonometricAsDataMatchesTheSwitch()
+            => AssertAgrees("ExpandTrigonometric", Patterns.ExpandTrigonometricRules,
+                MatchedRules.ExpandTrigonometric, leastFirings: 5, extra: new[]
+                {
+                    "1/2 * sin(2 * x)", "cos(2 * x)", "cos(2 * y)", "1/2 * sin(2 * y)",
+                    "cos(2 * (x + y))", "1/2 * sin(2 * sin(x))", "cos(3 * x)", "1/3 * sin(2 * x)",
+                });
+
+        /// <summary>
+        /// A predicate on a hole asked through the <c>switch</c>'s own helper, so the two cannot
+        /// disagree about where the multiplier stops being worth expanding.
+        /// </summary>
+        [Fact]
+        public void ExpandMultipleAngleAsDataMatchesTheSwitch()
+            => AssertAgrees("ExpandMultipleAngle", Patterns.ExpandMultipleAngleRules,
+                MatchedRules.ExpandMultipleAngle, leastFirings: 6, extra: new[]
+                {
+                    "sin(2 * x)", "cos(2 * x)", "sin(3 * x)", "cos(5 * x)",
+                    "sin(8 * x)", "cos(9 * x)", "sin(1 * x)", "sin(-3 * x)",
+                    "cos(x * 2)", "sin(2 * (x + y))",
+                });
+
+        /// <summary>
+        /// The two sets whose rule has no side condition because the work that decides whether it
+        /// applies <i>is</i> the rewrite. Agreement here is what says that handing the expression
+        /// back unchanged reads the same as a <c>switch</c> arm falling through.
+        /// </summary>
+        [Fact]
+        public void PolynomialLongDivisionAsDataMatchesTheSwitch()
+            => AssertAgrees("PolynomialLongDivision", Patterns.PolynomialLongDivision,
+                MatchedRules.PolynomialLongDivision, leastFirings: 20);
+
+        [Fact]
+        public void PolynomialGcdCancellationAsDataMatchesTheSwitch()
+            => AssertAgrees("PolynomialGcdCancellation", Patterns.PolynomialGcdCancellation,
+                MatchedRules.PolynomialGcdCancellation, leastFirings: 10);
+
+        /// <summary>
+        /// <b>Eight arms against three rules</b>, and this is the test that says the collapse is
+        /// sound. Four of the eight are one rule written for every way a sum can be spelled, which
+        /// <c>Commutative</c> says once — but a commutative pattern may bind the other way round
+        /// where both children fit both holes, and only agreement over generated input settles
+        /// whether that ever changes the answer.
+        /// </summary>
+        [Fact]
+        public void ExpandFactorialDivisionsAsDataMatchesTheSwitch()
+            => AssertAgrees("ExpandFactorialDivisions", Patterns.ExpandFactorialDivisions,
+                MatchedRules.ExpandFactorialDivisions, leastFirings: 4, extra: new[]
+                {
+                    "(x + 3)! / x!", "x! / (x + 3)!", "(3 + x)! / x!", "x! / (3 + x)!",
+                    "(x + 3)! / (x + 1)!", "(3 + x)! / (1 + x)!", "(x + 3)! / (1 + x)!",
+                    "(x + 100)! / x!", "(2 + 3)! / (2 + 1)!", "(x + 1/2)! / x!",
+                    "(y + 2)! / (x + 1)!", "x! / y!", "(x + 2)! / (x + 2)!",
+                });
+
+        /// <summary>
+        /// The same eight-into-three collapse on the multiplicative side.
+        /// </summary>
+        [Fact]
+        public void FactorizeFactorialMultiplicationsAsDataMatchesTheSwitch()
+            => AssertAgrees("FactorizeFactorialMultiplications", Patterns.FactorizeFactorialMultiplications,
+                MatchedRules.FactorizeFactorialMultiplications, leastFirings: 4, extra: new[]
+                {
+                    "(x - 1)! * x", "x! * (x + 1)", "x! * (1 + x)", "(1 + x)! * (x + 2)",
+                    "(x + 1)! * (x + 2)", "(x + 1)! * (2 + x)", "(x + 2)! * (x + 1)",
+                    "(2 + 3)! * (2 + 4)", "x! * y", "(x + 1)! * y", "x! * (x + 2)",
+                });
+
+        /// <summary>
+        /// <b>The alternation case.</b> The <c>switch</c> arm is <c>x is Sumf or Minusf</c>, which
+        /// <c>Node&lt;T&gt;</c> cannot say — and which the work-list in <c>work/rulecheck</c>
+        /// recorded as needing an addition to the matcher. A typed hole with a predicate says it,
+        /// and agreement over the corpus is what turns that from an argument into a fact.
+        /// </summary>
+        [Fact]
+        public void PerfectSquareAsDataMatchesTheSwitch()
+            => AssertAgrees("PerfectSquare", Patterns.PerfectSquareRules,
+                MatchedRules.PerfectSquare, leastFirings: 1, extra: new[]
+                {
+                    "1 + sqrt(2 * x) + x / 2", "x + 2 * sqrt(x) * sqrt(y) + y",
+                    "x - 2 * sqrt(x) * sqrt(y) + y", "4 + 4 * x + x ^ 2",
+                    "x + y", "x - y", "sin(x) + cos(x)",
+                });
+
+        /// <summary>
+        /// The set that had no addressable rules at all, because it is an ordinary method with
+        /// branches and locals rather than a <c>switch</c>. Its two rules now come from the data
+        /// form, and this is what says the data form does what the method does.
+        /// </summary>
+        [Fact]
+        public void RationalizeDenominatorAsDataMatchesTheSwitch()
+            => AssertAgrees("RationalizeDenominator", Patterns.RationalizeDenominator,
+                MatchedRules.RationalizeDenominator, leastFirings: 8, extra: new[]
+                {
+                    "1 / (3 - sqrt(5))", "2 / (3 - sqrt(5))", "1 / (5 + sqrt(3))",
+                    "(5 - sqrt(3)) / (5 + sqrt(3))", "1 / (1 + sqrt(2))", "3 / (2 + sqrt(7))",
+                    "1 / (x + sqrt(2))", "1 / (2 + 3)", "sqrt(2) / (1 + sqrt(2))",
+                    "1/2 * (sqrt(2) / 3)", "1/2 * (x / 3)",
+                });
+
+        /// <summary>
+        /// <b>Sixteen arms against eleven rules</b>, and the set where order matters most: the
+        /// both-negative rules have to be tried before the commutative one-sided ones, which
+        /// match a both-negative sum too.
+        /// </summary>
+        [Fact]
+        public void NumericNeatAsDataMatchesTheSwitch()
+            => AssertAgrees("NumericNeat", Patterns.NumericNeatRules,
+                MatchedRules.NumericNeat, leastFirings: 200);
+
+        /// <summary>
+        /// <b>Thirty-six arms against sixteen rules</b>, and the set #248 is for. Distributivity
+        /// is written eight times in the <c>switch</c> and absorption another eight, because a C#
+        /// pattern cannot say "either way round" at two levels at once.
+        /// </summary>
+        /// <remarks>
+        /// Boolean shapes are supplied on top of the corpus: the generated grammar builds
+        /// arithmetic, so <c>and</c>, <c>or</c>, <c>not</c>, <c>xor</c> and <c>implies</c> reach
+        /// this set only through what is named here.
+        /// </remarks>
+        [Fact]
+        public void BooleanAsDataMatchesTheSwitch()
+            => AssertAgrees("Boolean", Patterns.BooleanRules,
+                MatchedRules.Boolean, leastFirings: 20, extra: new[]
+                {
+                    "not a and not b", "not a or not b", "not a or a", "a or not a",
+                    "not a or b", "a and a", "a or a", "a implies a", "a xor a", "not not a",
+                    "a or true", "true or a", "a and false", "false and a", "false implies a",
+                    "(a and b) or (a and c)", "(b and a) or (a and c)", "(a and b) or (c and a)",
+                    "(b and a) or (c and a)",
+                    "(a or b) and (a or c)", "(b or a) and (a or c)", "(a or b) and (c or a)",
+                    "(b or a) and (c or a)",
+                    "a or (a and b)", "a and (a or b)", "(a and b) or a", "(a or b) and a",
+                    "a or (not a and b)", "a and (not a or b)", "a or (b and not a)",
+                    "(not a and b) or a", "(a and not b) or (b and not a)",
+                    "(not b and a) or (b and not a)", "(a and not b) or (not a and b)",
+                    "not a implies not b", "a implies b", "a and b", "a or b", "not a",
+                },
+                // Three shapes where the data form fires and the `switch` does not, because the
+                // `switch` wrote some orientations of absorption and not others. Each is a
+                // correct absorption -- (a and b) or a is a, and a or (b and not a) is a or b --
+                // so this is the commutative form being complete where the arms were not, and it
+                // is named here rather than waved through.
+                firesWhereTheSwitchDoesNot: new[]
+                {
+                    "a and b or a", "(a or b) and a", "a or b and not a",
+                });
+
+        /// <summary>
+        /// <b>Twenty-two arms against eleven rules.</b> Taking a common factor out is written
+        /// four times for a sum and four for a difference, and a commutative pattern says each
+        /// once — but a difference is not commutative, so only its operands' products are matched
+        /// either way round, which is a distinction a <c>switch</c> cannot make visible.
+        /// </summary>
+        [Fact]
+        public void FactorizationAsDataMatchesTheSwitch()
+            => AssertAgrees("Factorization", Patterns.FactorizeRules,
+                MatchedRules.Factorization, leastFirings: 100, extra: new[]
+                {
+                    "x ^ 4 - y ^ 6", "x ^ 2 - 9", "x ^ 2 - 2",
+                    "a * b + a * c", "b * a + a * c", "a * b + c * a", "b * a + c * a",
+                    "a + a * b", "a + b * a", "a * b + a", "b * a + a", "a + a",
+                    "a * b - a * c", "b * a - a * c", "a * b - c * a", "b * a - c * a",
+                    "a - a * b", "a - b * a", "a * b - a", "b * a - a", "a - a",
+                    "x ^ 3 * y ^ 3", "sqrt(x) * sqrt(y)", "4 + 4 * sqrt(x) + x",
+                });
+
+        /// <summary>
+        /// <b>Forty-three arms against thirty-three rules</b>, and the set with the most
+        /// conditions: the interval guards of #884 and #887 are per rule here rather than per
+        /// set, which is what the soundness field wanted all along.
+        /// </summary>
+        [Fact]
+        public void TrigonometricAsDataMatchesTheSwitch()
+            => AssertAgrees("Trigonometric", Patterns.TrigonometricRules,
+                MatchedRules.Trigonometric, leastFirings: 20, extra: new[]
+                {
+                    "sin(x) * cos(x)", "cos(x) * sin(x)", "arcsin(x) + arccos(x)",
+                    "arccos(x) + arcsin(x)", "arctan(1) + arccotan(1)", "arctan(-1) + arccotan(-1)",
+                    "arctan(x) + arccotan(x)", "arctan(1/2) + arctan(1/3)", "arctan(2) + arctan(3)",
+                    "arctan(sqrt(3))", "arctan(1 / sqrt(3))",
+                    "sin(2 * x) * cosec(x)", "cosec(x) * sin(2 * x)",
+                    "tan(x) * cotan(x)", "cotan(x) * tan(x)",
+                    "arcsin(sin(1))", "arcsin(sin(3))", "arccos(cos(1))", "arccos(cos(4))",
+                    "arctan(tan(1))", "arccotan(cotan(1))", "arccotan(cotan(0))",
+                    "sin(arcsin(x))", "cos(arccos(x))", "tan(arctan(x))", "cotan(arccotan(x))",
+                    "sin(x) ^ 2 + cos(x) ^ 2", "cos(x) ^ 2 + sin(x) ^ 2",
+                    "1 - sin(x) ^ 2", "1 - cos(x) ^ 2",
+                    "1 + tan(x) ^ 2", "tan(x) ^ 2 + 1", "1 + cotan(x) ^ 2", "cotan(x) ^ 2 + 1",
+                    "sec(x) ^ 2 - tan(x) ^ 2", "cosec(x) ^ 2 - cotan(x) ^ 2",
+                    "sin(x) ^ 2 - cos(x) ^ 2", "cos(x) ^ 2 - sin(x) ^ 2",
+                    "y / sec(x)", "y / cosec(x)",
+                    "sec(x) * cos(x)", "cos(x) * sec(x)", "cosec(x) * sin(x)", "sin(x) * cosec(x)",
+                    "arcsin(2 / x)", "arccos(2 / x)", "arccosec(2 / x)", "arcsec(2 / x)",
+                    "arcsin(x / 2)",
+                });
+
+        /// <summary>
+        /// The set that was expected to need something the matcher does not have. It did not —
+        /// a node pattern is not limited to two children, and a name bound twice inside a
+        /// <c>ConditionalSet</c> still matches the same thing twice despite the capture-avoiding
+        /// rename its traversal performs. This test is what says so.
+        /// </summary>
+        [Fact]
+        public void SetOperatorAsDataMatchesTheSwitch()
+            => AssertAgrees("SetOperator", Patterns.SetOperatorRules,
+                MatchedRules.SetOperator, leastFirings: 8, extra: new[]
+                {
+                    @"A /\ A", @"A \/ A", @"A \ A",
+                    @"{ 1, 2 } /\ ({ 2, 3 } \/ { 3, 4 })", @"({ 2, 3 } \/ { 3, 4 }) /\ { 1, 2 }",
+                    "{ x : x in [0; 1] }", "{ x : x in { 1, 2 } }", "{ x : x > 0 }",
+                    "1 in { 5 }", "x in { 5 }", "x in { 5, 6 }",
+                    "x in [0; 1]", "x in (0; 1)", "x in (-oo; +oo)",
+                    "{ true, false }", "{ true }", "(-oo; +oo)", "(0; +oo)",
+                });
+
+        /// <summary>
+        /// <b>The first sets parameterised by something other than the expression</b>, and the
+        /// pair that unblocks six registry entries between them: three canonical orders and three
+        /// common-denominator variants, one per sort level.
+        /// </summary>
+        /// <remarks>
+        /// Checked at every level, because the level is what the rules close over and a set built
+        /// for one is not evidence about another.
+        /// </remarks>
+        // The level is an internal enum, so the theory carries its ordinal: a public test method
+        // cannot take it as a parameter.
+        private static TreeAnalyzer.SortLevel Level(int ordinal) => (TreeAnalyzer.SortLevel)ordinal;
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        public void SortAsDataMatchesTheSwitch(int ordinal)
+        {
+            var level = Level(ordinal);
+            AssertAgrees($"Sort.{level}", Patterns.SortRules(level),
+                MatchedRules.Sort(level), leastFirings: 100);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        public void CommonDenominatorAsDataMatchesTheSwitch(int ordinal)
+        {
+            var level = Level(ordinal);
+            AssertAgrees($"CommonDenominator.{level}",
+                expr => Patterns.FractionCommonDenominatorRules(expr, level),
+                MatchedRules.CommonDenominator(level), leastFirings: 50);
+        }
+
+        /// <summary>
+        /// <b>Sixty-five arms, and the set where transcription found a wrong answer.</b> Four of
+        /// the eight `or`-with-equality arms carried their neighbour's comparison, so
+        /// `(y &lt; x) or (x = y)` simplified to `x &lt;= y` — its own negation off the diagonal.
+        /// That was fixed first (#1077), so this agrees with a `switch` that is right; had it been
+        /// transcribed faithfully instead, this test would have passed and recorded the defect.
+        /// </summary>
+        /// <remarks>
+        /// The corpus needs comparisons, which the arithmetic grammar does not generate, so almost
+        /// all of the firings come from `extra` here. The `leastFirings` threshold is what keeps
+        /// that honest.
+        /// </remarks>
+        [Fact]
+        public void InequalityEqualityAsDataMatchesTheSwitch()
+            => AssertAgrees("InequalityEquality", Patterns.InequalityEqualityRules,
+                MatchedRules.InequalityEquality, leastFirings: 60, extra: new[]
+                {
+                    "(x < y) or (x = y)", "(y < x) or (x = y)", "(x > y) or (x = y)",
+                    "(y > x) or (x = y)", "(x = y) or (x < y)", "(x = y) or (y < x)",
+                    "(x = y) or (x > y)", "(x = y) or (y > x)",
+                    "not (x > y)", "not (x < y)", "not (x >= y)", "not (x <= y)",
+                    "not (x > y and y = z)", "not (x > y or y = z)",
+                    "not (x > y and y < z and z = x)", "not (x > y or y < z or z = x)",
+                    "(x > y and y > z) implies (x > z)", "(x < y and y < z) implies (x < z)",
+                    "0 = x", "0 > x", "0 < x", "0 >= x", "0 <= x",
+                    "2 = x", "2 > x", "2 < x", "2 >= x", "2 <= x",
+                    "x < y and x > y", "x < y and x = y", "x >= y and x < y",
+                    "x < y or x >= y", "x <= y or x > y", "x <= y or x >= y",
+                    "x ^ 2 = 0", "x ^ (1/2) = 0", "1 / x = 0",
+                    "2 * x = 0", "2 * x > 0", "2 * x >= 0", "2 * x < 0", "2 * x <= 0",
+                    "x * 2 = 0", "x * 2 > 0", "x * 2 >= 0", "x * 2 < 0", "x * 2 <= 0",
+                    "-2 * x = 0", "-2 * x > 0", "-2 * x >= 0", "-2 * x < 0", "-2 * x <= 0",
+                    "x * (-2) = 0", "x * (-2) > 0", "x * (-2) < 0",
+                    "x / 2 = 0", "x / 2 > 0", "x / 2 >= 0", "x / 2 < 0", "x / 2 <= 0",
+                    "x / (-2) = 0", "x / (-2) > 0", "x / (-2) < 0",
+                    "x! = 0", "x > x", "x < x", "x >= x", "x <= x",
+                });
+
+        /// <summary>
+        /// <b>The largest set, and the one carrying the most branch-cut conditions.</b> Five
+        /// separate issues put a guard on one rule here; the data form asks the same helpers in
+        /// <c>Patterns.Power.cs</c> rather than restating any of them, which is the only way two
+        /// copies of a branch cut cannot come to disagree.
+        /// </summary>
+        [Fact]
+        public void PowerAsDataMatchesTheSwitch()
+            => AssertAgrees("Power", Patterns.PowerRules,
+                MatchedRules.Power, leastFirings: 100, extra: new[]
+                {
+                    "x ^ (2 / log(3, x))", "2 ^ log(2, x)", "3 ^ log(3, x + 1)",
+                    "x ^ 2 * x ^ 3", "x ^ 2 / x ^ 3", "(x ^ 2) ^ 3", "sqrt(x ^ 2)",
+                    "x ^ y * z ^ y", "x ^ y / z ^ y", "2 ^ y * 3 ^ y", "2 ^ y / 3 ^ y",
+                    "x ^ y / z ^ (2 * y)", "x ^ (2 * y) / z ^ y",
+                    "x / x ^ 2", "x ^ 2 / x", "x ^ (-1)", "y ^ (-1)",
+                    "x ^ 2 * (x * y)", "(x * y) * x ^ 2", "x ^ 2 * (y * x)", "(y * x) * x ^ 2",
+                    "(2 * x) ^ 3", "(2 * x) ^ (1/2)", "(-2 * x) ^ (1/2)",
+                    "(2 / x) ^ 3 * x", "(2 / x) ^ 3 * x ^ 4",
+                    "x / y / y", "x / y ^ 2 / y", "x / y / y ^ 2", "x / y ^ 3 / y ^ 2",
+                    "x * y ^ 2", "log(2, x ^ 3)", "log(2, 3 ^ x)", "log(x, x)", "log(2, 2)",
+                    "log(1 / x, 1 / y)", "log(x, 1 / y)", "log(1 / x, y)",
+                    "log(2, 3) + log(2, 5)", "log(2, 3) - log(2, 5)",
+                    "log(2, x) + log(2, y)", "log(2, x) - log(2, y)",
+                    "8 ^ (1/2)", "54 ^ (1/3)", "12 ^ (1/2)", "7 ^ (1/2)", "8 ^ (3/2)",
+                });
+
+        /// <summary>
+        /// <b>The last set, and the largest: a hundred arms.</b> Most of them are one shape
+        /// written out in every orientation its operands can take, which is what a `switch` has
+        /// to do and a commutative pattern does not — so the hundred are sixty-two rules. Every
+        /// orientation collapsed here is one the `switch` writes out, and this is what says so:
+        /// `firesWhereTheSwitchDoesNot` is empty, so a pattern that reached one shape more than
+        /// its arms did would fail rather than pass quietly.
+        /// </summary>
+        [Fact]
+        public void CommonAsDataMatchesTheSwitch()
+            => AssertAgrees("Common", Patterns.CommonRules,
+                MatchedRules.Common, leastFirings: 400, extra: new[]
+                {
+                    "2 * sin(x) * cos(x)", "(2 * sin(x)) * 3", "3 * (2 * sin(x))",
+                    "(2 * sin(x)) * (3 * cos(x))", "(sin(x) + y) + cos(x)", "cos(x) + (sin(x) + y)",
+                    "sin(x) * 2", "2 + sin(x)", "x * 2", "2 + x",
+                    "2 * x + 3 * x", "2 * x - 3 * x", "(2 * x) * 3", "3 * (2 * x)",
+                    "(x + 2) + 3", "3 + (x + 2)",
+                    "abs(x) * abs(y)", "abs(x) / abs(y)",
+                    "sgn(x) * (y * x) / abs(x)", "sgn(x) * abs(x)", "abs(x) * sgn(x)",
+                    "x / 2", "(1/2) * x", "x * (1/2)", "(-1/2) * x", "x * (-1/2)",
+                    "cos(-x)", "cos(-2 * x)", "sec(-x)", "abs(-x)", "sin(-x)", "sin(-2 * x)",
+                    "tan(-x)", "cotan(-x)", "cosec(-x)", "sgn(-x)",
+                    "(x - y) * (x + y)", "(x + y) * (x - y)",
+                    "x * y / y", "y * x / y", "x * y / (y * z)", "x * y / (z * y)",
+                    "(x - y) / (y - x)", "(x + y) / (y + x)",
+                    "2 / (3 * x)", "2 / (x * 3)", "2 * (3 * x)",
+                    "x + (y + x)", "x + (x + y)", "(y + x) + x", "(x + y) + x",
+                    "(x + y) - x", "(y + x) - x", "x - (y + x)", "x - (x + y)",
+                    "x + (y - x)", "x + (x - y)", "(y - x) + x", "(x - y) + x",
+                    "x - (y - x)", "x - (x - y)", "(y - x) - x", "(x - y) - x",
+                    "x / y + x * z", "x / y + z * x", "z * x + x / y", "x * z + x / y",
+                    "x + x / y", "x / y + x", "2 + 2 / y",
+                });
+
+        /// <summary>
+        /// A predicate on a hole that is a mathematical property rather than a sign or a type.
+        /// The corpus reaches it rarely, so the shapes are given here as well — a set that fires
+        /// four times over a generated corpus is worth checking against cases chosen for it.
+        /// </summary>
+        [Fact]
+        public void PhiFunctionAsDataMatchesTheSwitch()
+            => AssertAgrees("PhiFunction", Patterns.PhiFunctionRules,
+                MatchedRules.PhiFunction, leastFirings: 1, extra: new[]
+                {
+                    "phi(2 ^ 5)", "phi(3 ^ 2)", "phi(7 ^ 1)", "phi(13 ^ x)",
+                    "phi(4 ^ 3)", "phi(6 ^ 2)", "phi(9 ^ 2)", "phi(x ^ 2)",
+                });
+
+        /// <summary>
         /// A predicate on a hole refuses what fails it, which is the C# property pattern
         /// <c>Integer { IsPositive: true }</c> as data.
         /// </summary>
@@ -131,12 +596,20 @@ namespace AngouriMath.Tests.Core.Transformations
         }
 
         /// <summary>
-        /// Order is part of the data. Reversing the two rules that overlap makes the general
-        /// one swallow the special one, which is what an ordered list is for and what a
-        /// <c>switch</c> gets by accident of being written top to bottom.
+        /// Order is part of the data — and <b>where one pattern subsumes another it is no longer
+        /// part of the writing</b>. Reversing this set used to make the general rule swallow the
+        /// special one; it does not any more, because the specific rule is put first by what the
+        /// two patterns are rather than by which was typed above the other.
         /// </summary>
+        /// <remarks>
+        /// This test asserted the opposite until <c>MatchedRuleSet.RulesByPriority</c> existed, and
+        /// its own comment gave the reason to change it: a <c>switch</c> gets its ordering "by
+        /// accident of being written top to bottom", and an accident is what an ordered list of
+        /// values does not have to inherit. <c>RulePriorityTest</c> is where the mechanism and its
+        /// limits are.
+        /// </remarks>
         [Fact]
-        public void TheOrderOfTheRulesIsLoadBearing()
+        public void ASubsumedRuleIsTriedFirstHoweverTheSetIsWritten()
         {
             var expr = "(a / b) * (c / d)".ToEntity();
             var asWritten = MatchedRules.CollapseMultipleFractions.FirstMatching(expr);
@@ -144,8 +617,37 @@ namespace AngouriMath.Tests.Core.Transformations
 
             var reversed = new MatchedRuleSet("reversed",
                 MatchedRules.CollapseMultipleFractions.Rules.Reverse().ToArray());
-            Assert.NotEqual("product-of-two-quotients", reversed.FirstMatching(expr)!.Name);
+            Assert.Equal("product-of-two-quotients", reversed.FirstMatching(expr)!.Name);
         }
+
+        /// <summary>
+        /// And where neither pattern subsumes the other, order is still the whole of the answer.
+        /// </summary>
+        /// <remarks>
+        /// The two rules here both match a product of two quotients, and neither is more general
+        /// than the other — one takes the quotient on the left, the other the quotient on the
+        /// right — so nothing but their order decides which fires. Asked as a set of two so that
+        /// the rule which subsumes them both is out of the way; in the real set it wins, which is
+        /// the previous test.
+        /// </remarks>
+        [Fact]
+        public void WhereNeitherRuleSubsumesTheOtherTheOrderStillDecides()
+        {
+            var expr = "(a / b) * (c / d)".ToEntity();
+            var left = Named("product-with-a-quotient-on-the-left");
+            var right = Named("product-with-a-quotient-on-the-right");
+
+            Assert.False(left.Left.Subsumes(right.Left));
+            Assert.False(right.Left.Subsumes(left.Left));
+
+            Assert.Equal(left.Name, new MatchedRuleSet("left first", left, right)
+                .FirstMatching(expr)!.Name);
+            Assert.Equal(right.Name, new MatchedRuleSet("right first", right, left)
+                .FirstMatching(expr)!.Name);
+        }
+
+        private static MatchedRule Named(string name)
+            => MatchedRules.CollapseMultipleFractions.Rules.Single(rule => rule.Name == name);
 
         /// <summary>
         /// A rule-level guard over <b>two</b> bindings at once, which no predicate on a single

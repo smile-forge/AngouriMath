@@ -43,6 +43,34 @@ namespace AngouriMath.Functions.Algebra.AnalyticalSolving
                 : roots;
 
         /// <summary>
+        /// Answers the condition itself where a root denies the independence the calculus
+        /// operators in the equation were evaluated under.
+        /// </summary>
+        /// <remarks>
+        /// <c>derivative(y, x) + y - x</c> was answered <c>{ x }</c>: the derivative went to
+        /// zero because <c>y</c> is not <c>x</c>, and the root then says that it is. Putting
+        /// it back gives <c>derivative(x, x) + x - x</c>, which is 1 — so the set named a
+        /// member that is not a root. A root free of that name is untouched, because nothing
+        /// was assumed that it goes on to deny: <c>derivative(y * x, x) + y - 1</c> is still
+        /// <c>{ 1/2 }</c>.
+        ///
+        /// The equation is not thereby unsatisfiable, so the empty set would be a second
+        /// false claim in place of the first. What holds is the condition as written, and
+        /// solving it needs a differential-equation solver this library does not have.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/964">#964</a>,
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/746">#746</a>
+        /// </remarks>
+        internal static Set UnsolvedWhereIndependenceIsDenied(Set roots, Entity condition, Variable x)
+        {
+            if (roots is not FiniteSet finite)
+                return roots;
+            var assumed = CalculusOperator.NamesAssumedFreeOf(condition, x);
+            return assumed.Count > 0 && finite.Any(root => assumed.Any(root.ContainsNode))
+                ? new ConditionalSet(x, condition)
+                : roots;
+        }
+
+        /// <summary>
         /// How large the residual has to be next to the terms it is the sum of before it
         /// counts as evidence against a root.
         /// </summary>
@@ -120,6 +148,105 @@ namespace AngouriMath.Functions.Algebra.AnalyticalSolving
             return largest;
         }
 
+        /// <summary>
+        /// What <c>not a</c> is as a statement about <paramref name="x"/>: the negation pushed
+        /// inward as far as there is an arm for it, and named as a set-builder where there is not.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// There was no arm for <see cref="Notf"/> at all, so every negation fell to
+        /// <see cref="Set.Empty"/> — <c>not (x = 1)</c>, <c>not (x &gt; 1)</c> and
+        /// <c>not (x in RR)</c> each answered "no x satisfies this", which is a positive claim and
+        /// false of all three. That is the defect
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1036">#1036</a> fixed for
+        /// equations, left standing for negation.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1127">#1127</a>
+        /// </para>
+        /// <para>
+        /// Pushing the negation inward is unambiguous <i>here</i> in a way it is not in the
+        /// simplifier, which is why it is done here and not as a rule: this switch has arms for
+        /// the connectives and for the comparisons and none for <c>not</c>, so inward is the
+        /// direction that reaches one. A negated comparison is a comparison, and
+        /// <see cref="Core.Transformations.RewriteRules.InequalityEquality"/> is where that is
+        /// already written down — asking it rather than restating it keeps the two from drifting.
+        /// </para>
+        /// <para>
+        /// What is left over is answered as written rather than as nothing: <c>not (x in RR)</c>
+        /// is <c>{ x : not x in RR }</c>, which names the non-real complex numbers exactly and
+        /// asserts of them only that they are what the statement says.
+        /// </para>
+        /// </remarks>
+        private static Set Negation(Entity statement, Entity operand, Variable x)
+        {
+            switch (operand)
+            {
+                // not not a = a
+                case Notf(var inner):
+                    return Solve(inner, x);
+                // De Morgan, in the direction that reaches an arm.
+                case Andf(var left, var right):
+                    return (Set)MathS.Union(Solve(!left, x), Solve(!right, x));
+                case Orf(var left, var right):
+                    return Conjunction(Solve(!left, x), Solve(!right, x), statement, x);
+            }
+
+            var asAComparison = Core.Transformations.RewriteRules.InequalityEquality.ApplyOnce(statement);
+            if (asAComparison is not Notf)
+                return Solve(asAComparison, x);
+
+            return new ConditionalSet(x, statement);
+        }
+
+        /// <summary>
+        /// <c>a implies b</c> holds where <c>a</c> fails or where <c>b</c> holds, and the first
+        /// half of that is a set-builder rather than a complement.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This used to read <c>expr.Codomain \ Solve(a) \/ Solve(b)</c>, taking the
+        /// complement inside the <b>statement node's</b> codomain. That is
+        /// <see cref="Domain.Boolean"/> for every <see cref="Impliesf"/>, so
+        /// <c>(x = 1) implies (x = 2)</c> was answered <c>{ 2 } \/ BB</c> — a solution set for
+        /// a numeric question containing <c>True</c> and <c>False</c>. That is exactly the
+        /// confusion between a codomain and a set that
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/996">#996</a> is about,
+        /// and a <c>TODO</c> here asked for a universal set to subtract from instead.
+        /// </para>
+        /// <para>
+        /// <b>Neither is needed.</b> "The values of <c>x</c> where <c>a</c> does not hold" is
+        /// <c>{ x : not a }</c>, which names no universe at all — a set-builder is already this
+        /// library's unconstrained set, and a complement written that way is right whatever
+        /// <c>x</c> ranges over. Which is #996's answer: what the solver wanted was the
+        /// difference, and the difference is expressible without the universe.
+        /// </para>
+        /// <para>
+        /// It does not make the implication solver complete. <c>Solve(b, x)</c> is still
+        /// <see cref="Set.Empty"/> where <c>b</c> does not mention <c>x</c>, so
+        /// <c>A implies True</c> comes back as <c>{ A : not A }</c> and not as <c>BB</c> — as it
+        /// did before, where the answer was <c>BB \ { True }</c>. What this stops is answering
+        /// with a set the question was never asked over.
+        /// </para>
+        /// </remarks>
+        private static Set Implication(Entity left, Entity right, Variable x)
+            => (Set)MathS.Union(new ConditionalSet(x, !left), Solve(right, x));
+
+        /// <summary>
+        /// Where both sides of a conjunction were settled, its solution set is the
+        /// intersection of theirs.
+        /// </summary>
+        /// <remarks>
+        /// Where one of them is a condition nothing settled, it is not: intersecting a
+        /// finite set with one keeps an element whose membership could not be decided, so
+        /// <c>x^6 + x*y + 1 = 0 and x - 1 = 0</c> comes back as <c>{ 1 }</c> — and 1 is a
+        /// root of the first only when <c>y</c> is -2. The conjunction as written asserts
+        /// exactly what is known about it and nothing more.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1036">#1036</a>
+        /// </remarks>
+        private static Set Conjunction(Set left, Set right, Entity statement, Variable x)
+            => (left, right) is (ConditionalSet, FiniteSet) or (FiniteSet, ConditionalSet)
+                ? new ConditionalSet(x, statement)
+                : (Set)MathS.Intersection(left, right);
+
         internal static Set Solve(Entity expr, Variable x)
             => expr switch
             {
@@ -127,18 +254,19 @@ namespace AngouriMath.Functions.Algebra.AnalyticalSolving
                     => AnalyticalSetSolver.Solve(left, right, x),
 
                 Equalsf(var left, var right) when left is not Set && right is not Set
-                    => WithoutSpuriousRoots(AnalyticalEquationSolver.Solve(left - right, x), left - right, x),
+                    => UnsolvedWhereIndependenceIsDenied(
+                        WithoutSpuriousRoots(AnalyticalEquationSolver.Solve(left - right, x), left - right, x),
+                        expr, x),
 
                 Equalsf => Empty,
 
-                Andf(var left, var right) => 
-                    MathS.Intersection(Solve(left, x), Solve(right, x)),
+                Andf(var left, var right) =>
+                    Conjunction(Solve(left, x), Solve(right, x), expr, x),
                 Orf(var left, var right) => 
                     MathS.Union(Solve(left, x), Solve(right, x)),
-                Impliesf(var left, var right) => 
-                    MathS.Union(MathS.SetSubtraction(expr.Codomain, Solve(left, x)), Solve(right, x)),
+                Impliesf(var left, var right) => Implication(left, right, x),
+                Notf(var operand) => Negation(expr, operand, x),
 
-                // TODO: there should be universal set to subtract from when inverting
                 Greaterf(var left, var right) => 
                     AnalyticalInequalitySolver.Solve(Minus(left, right), x),
                 LessOrEqualf(var left, var right) => 

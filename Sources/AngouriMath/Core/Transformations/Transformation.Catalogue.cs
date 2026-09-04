@@ -6,6 +6,9 @@
 //
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using AngouriMath.Core.Budgets;
 using AngouriMath.Functions;
 using AngouriMath.Functions.Algebra;
 using static AngouriMath.Entity;
@@ -40,7 +43,38 @@ namespace AngouriMath.Core.Transformations
         /// How hard to look; the same argument <see cref="Entity.Simplify(int)"/> takes.
         /// </param>
         public static Transformation SimplificationAtLevel(int level)
-            => LevelledCache.Simplification.For(level, static l => new SimplificationTransformation(l));
+            => LevelledCache.Simplification.For(level, static l => new SimplificationTransformation(l, null));
+
+        /// <summary>
+        /// The full simplification pipeline at a chosen level, rating candidates by
+        /// <paramref name="costModel"/> instead of <see cref="MathS.Settings.ComplexityCriteria"/>.
+        /// </summary>
+        /// <param name="level">
+        /// How hard to look; the same argument <see cref="Entity.Simplify(int)"/> takes.
+        /// </param>
+        /// <param name="costModel">
+        /// Which candidate counts as cheapest. <see cref="Core.CostModel.Default"/> here behaves
+        /// exactly like <see cref="SimplificationAtLevel(int)"/> — passing it is how a caller
+        /// states that on purpose rather than by leaving a parameter out.
+        /// </param>
+        /// <remarks>
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/746">#746</a> tier 2 named
+        /// this remaining on its own row: "a cost model that reaches an API rather than an ambient
+        /// setting". <see cref="MathS.Settings.ComplexityCriteria"/> already <i>is</i> an API in
+        /// the sense that a caller can scope it explicitly and safely — it is backed by the same
+        /// <see cref="Convenience.Setting{T}"/> <see cref="MathS.Settings.Budget"/> uses, async-local rather
+        /// than thread-static, so one caller's override cannot leak into another's concurrent call.
+        /// What it lacked was a place in <em>this</em> API, the addressable one <see cref="Transformation"/>
+        /// is: composing <c>SimplificationAtLevel(2, costModel).Then(...)</c> names the choice
+        /// where setting an ambient value around a call does not. This overload does not
+        /// reimplement candidate search against an explicit parameter threaded through
+        /// <c>Simplificator</c> -- that would be a second pipeline to keep in step with the one
+        /// <see cref="Entity.Simplify(int)"/> actually runs. It scopes the existing, already-tested
+        /// setting for the duration of this one call instead of introducing a second pipeline.
+        /// </remarks>
+        public static Transformation SimplificationAtLevel(int level, CostModel costModel)
+            => new SimplificationTransformation(
+                level, costModel ?? throw new ArgumentNullException(nameof(costModel)));
 
         /// <summary>
         /// Multiplies products over sums out, as <see cref="Entity.Expand(int)"/> does.
@@ -70,11 +104,136 @@ namespace AngouriMath.Core.Transformations
         /// </remarks>
         public static Transformation FactorizationAtLevel(int level)
             => LevelledCache.Factorization.For(level, static l =>
+                RuleBasedFactorizationAtLevel(l)
+                    // And then the polynomial layer, which factors what no rule set has a rule
+                    // for. Last, so that the rules keep every answer they already gave and this
+                    // only ever adds one. See PolynomialFactorization.
+                    .Then(PolynomialFactorization)
+                    // And last of all the numeric content, which is the only step here that
+                    // `Simplify` deliberately does not get: `2 * (x + 2 * a)` is a node larger
+                    // than `4 * a + 2 * x`, so the cost model will not take it and only a caller
+                    // who asked to factorise wants it. https://github.com/asc-community/AngouriMath/issues/195
+                    .Then(NumericContentExtraction));
+
+        /// <summary>
+        /// Takes the whole number every term of a sum divides by out in front of it:
+        /// <c>2x + 4a</c> becomes <c>2 * (x + 2a)</c>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>The "forcefully" of
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/195">#195</a>.</b> A factor
+        /// appearing <i>identically</i> in every term already comes out peacefully — <c>2x + 2a</c>
+        /// is <c>2 * (a + x)</c> under plain <see cref="Entity.Simplify(int)"/> — and a common
+        /// <b>divisor</b> does not, because the result is larger and
+        /// <c>Entity.SimplifiedRate</c> will not choose it.
+        /// </para>
+        /// <para>
+        /// Offered on its own as well as inside <see cref="FactorizationAtLevel"/>, because it is
+        /// the one step of factorisation whose answer a caller might want without the rest.
+        /// </para>
+        /// </remarks>
+        /// <remarks>
+        /// Held in a nested class rather than in a static field of this one, and that is not a
+        /// style choice. <see cref="Factorization"/> is declared <i>above</i> this and calls
+        /// <see cref="FactorizationAtLevel"/> in its own initialiser, which reads this — and a
+        /// static field initialiser runs in declaration order, so it would read <see langword="null"/>
+        /// and fail as a <c>TypeInitializationException</c> from somewhere else entirely. A nested
+        /// type initialises on first use instead, whatever order the fields are written in.
+        /// </remarks>
+        public static Transformation NumericContentExtraction => Held.Instance;
+
+        private static class Held
+        {
+            [ConstantField]
+            internal static readonly Transformation Instance = new NumericContentTransformation();
+        }
+
+        private sealed class NumericContentTransformation : Transformation
+        {
+            public override string Name => "numeric-content";
+            public override TransformationRelation Relation => TransformationRelation.Equivalence;
+            public override Soundness Soundness => Soundness.Sound;
+
+            // Never null. `Then` propagates a null from its second half as the whole chain having
+            // no answer, so a step that says "I did not apply" by returning null does not step
+            // aside -- it discards everything the steps before it produced. Returning the input
+            // unchanged is how the polynomial layer above does it and for the same reason: this
+            // only ever adds an answer to the ones already given.
+            protected override Entity? ApplyCore(Entity input)
+                => Functions.NumericContent.Extracted(input);
+        }
+
+        /// <summary>
+        /// The rule-based half of <see cref="FactorizationAtLevel"/>, without the polynomial
+        /// layer.
+        /// </summary>
+        /// <remarks>
+        /// Separate because <c>Simplify</c> offers a factorisation as a <b>candidate</b> and its
+        /// cost model decides. The metric prefers the expanded form — <c>x ^ 6 - 1</c> rates 12
+        /// expanded against 58 factored — so a factored candidate wins only where the two are
+        /// closest, and those turn out to be the places a factored answer is least wanted:
+        /// <c>x ^ 3 / 3 + x ^ 2 / 2</c> becomes <c>(3 + 2 * x) * x ^ 2 / 6</c>, an antiderivative
+        /// in a form nobody writes. Offering the layer to that search is
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/746">#746</a> tier 2's
+        /// pluggable cost model rather than
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1018">#1018</a>.
+        /// </remarks>
+        public static Transformation RuleBasedFactorizationAtLevel(int level)
+            => LevelledCache.RuleBasedFactorization.For(level, static l =>
                 Rewriting(RewriteRules.PerfectSquare)
                     .Then(Rewriting(RewriteRules.Factorization))
                     .Then(InnerSimplification)
                     // Entity.Factorize has always run at least one pass, whatever it was asked for.
                     .Repeat(Math.Max(l, 1)));
+
+        /// <summary>
+        /// Factors a polynomial by the polynomial layer — square-free decomposition, Zassenhaus
+        /// over <c>Q</c>, Kronecker's substitution and Hensel lifting — rather than by a rule.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A rule set factors what someone wrote a rule for. <c>x ^ 2 - 1</c> has one and
+        /// <c>x ^ 3 - 1</c> does not, which is why <see cref="Entity.Factorize(int)"/> — the
+        /// operation whose entire job is factorisation — was worse at it than the machinery that
+        /// exists for it. <a href="https://github.com/asc-community/AngouriMath/issues/1018">#1018</a>
+        /// </para>
+        /// <para>
+        /// <b>This is not the cost-model question.</b> The reason the polynomial layer is not
+        /// wired into <c>Simplify</c> is that <c>SimplifiedRate</c> prefers the expanded
+        /// form — <c>x ^ 6 - 1</c> rates 12 expanded against 58 factored — so a factored candidate
+        /// could never win a search. There is no search here: <c>Factorize</c> is asked for the
+        /// factored form and returns it.
+        /// </para>
+        /// <para>
+        /// <b>Which variable.</b> The layer factors with respect to one, and an expression has
+        /// several. Each of its variables is tried in turn and the first that yields a genuine
+        /// product wins, which is deterministic because <see cref="Entity.Vars"/> is. Trying them
+        /// all rather than guessing a main one is what makes <c>x ^ 4 - y ^ 4</c> come out whole
+        /// however the caller wrote it.
+        /// </para>
+        /// <para>
+        /// <b>What it declines.</b> Anything that is not a polynomial, anything the layer refuses,
+        /// and anything whose answer is not a product — a refusal leaves the expression exactly as
+        /// the rules left it, so nothing that factored before can stop factoring.
+        /// </para>
+        /// </remarks>
+        /// <remarks>
+        /// Held in a nested class rather than in a static field of this one. Static field
+        /// initialisers run in declaration order, and <see cref="Factorization"/> — declared
+        /// above — is eager, so a field here would still be <see langword="null"/> when its
+        /// pipeline is built. That surfaces as <c>ArgumentNullException(nameof(next))</c> from a
+        /// combinator rather than as anything naming the real cause, and this file has had that
+        /// failure before. A nested type is initialised on first touch, whatever order this
+        /// one's members are written in.
+        /// </remarks>
+        public static Transformation PolynomialFactorization => PolynomialFactorizationHolder.Instance;
+
+        private static class PolynomialFactorizationHolder
+        {
+            [ConstantField]
+            internal static readonly Transformation Instance = new PolynomialFactorizationTransformation();
+        }
 
         /// <summary>
         /// Puts commutative chains into a canonical order, so that expressions which differ
@@ -183,6 +342,169 @@ namespace AngouriMath.Core.Transformations
             = Rewriting(RewriteRules.RationalizeDenominator).Then(InnerSimplification);
 
         /// <summary>
+        /// Explores the equalities the whole registry's rules reach from an expression at once,
+        /// over an e-graph, and extracts the cheapest under <paramref name="costModel"/>.
+        /// </summary>
+        /// <param name="budget">
+        /// What this call may spend before it settles for the best it has found so far.
+        /// <see cref="WorkBudget.Steps"/> is charged once per e-node the graph actually creates;
+        /// <see cref="WorkBudget.Time"/> is the wall-clock backstop. A caller who sets
+        /// <see cref="MathS.Settings.Budget"/> overrides this, the same as every other bounded
+        /// computation in the library.
+        /// </param>
+        /// <param name="costModel">Which candidate counts as cheapest once exploration stops.</param>
+        /// <remarks>
+        /// <para>
+        /// <b>Nothing runs this by default</b> — the same standing as
+        /// <see cref="RationalCanonicalization"/> and <see cref="Canonicalization"/>, and for a
+        /// sharper reason: <c>Simplify</c> applies a rule set once, keeps a candidate and moves on,
+        /// so an expanding rule and a collecting one never meet — the order they run in decides
+        /// which wins. Equality saturation deletes that order and keeps every result, which is
+        /// why it needs a budget rather than a pass count, and why only the rules a scheduler can
+        /// prove will not run away are offered to it — see the next paragraph.
+        /// </para>
+        /// <para>
+        /// <b>Only rules whose <see cref="Matching.MatchedRule.Growth"/> is exactly
+        /// <see cref="RewriteRuleGrowth.Collects"/> or <see cref="RewriteRuleGrowth.Rearranges"/>,
+        /// and whose <see cref="Matching.MatchedRule.Soundness"/> is at least
+        /// <see cref="Soundness.SoundUnderAssumptions"/>, are used</b> — the population is
+        /// <see cref="Matching.MatchedRules.All"/>, not the public registry. Growth is derived
+        /// from the pattern tree for a rule whose replacement is itself a pattern, and declared
+        /// explicitly by the rule's own author for a rule whose replacement is code, which is what
+        /// let a further batch of code-built rules earn a place here without being able to lie
+        /// about it. <see cref="RewriteRuleGrowth.Unknown"/> is withheld either way: a rule nobody
+        /// has justified is not proven safe, and not proven safe is not the same as safe. This is
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/746">#746</a> tier 2's
+        /// e-graph. As of this writing the filter passes 43 rules.
+        /// </para>
+        /// <para>
+        /// <b>Real e-matching now runs wherever a rule's pattern supports it, and this only falls
+        /// back to materialising a term where it cannot.</b> A rule's
+        /// <see cref="Matching.MatchPattern.CanEMatch"/> on its <see cref="Matching.MatchedRule.Left"/>
+        /// decides per rule: where it is true this asks the e-graph directly, which is what a
+        /// production e-matcher over <see cref="Matching.MatchPattern"/> is supposed to do; where
+        /// it is false this falls back to extracting a term and rewriting that instead — slower,
+        /// and the only path the harness this is built from ever took. Of the 43 rules the filter
+        /// above passes, roughly 27-28 can actually build a replacement today; the remaining ~15
+        /// each build a boolean connective or a turned-around equality (<c>and</c>, <c>or</c>,
+        /// <c>not</c>, <c>xor</c>, <c>implies</c>, <c>=</c>) and are correctly classified as safe,
+        /// but cannot fire, because <see cref="EGraph"/>'s reconstruction whitelist has no entry
+        /// for any of those node types yet and <c>EGraph.Extract</c> returns nothing for a
+        /// class that needs one. That is a separate, already-known limitation of
+        /// <see cref="EGraph"/> itself — see <c>Docs/Contributing/EqualitySaturationReviewFindings.md</c>
+        /// — not a defect in how these 15 rules were classified. The day the whitelist widens to
+        /// cover those six node types, all 15 go live at once, which is the moment to re-run
+        /// <c>work/egraph</c>, not before.
+        /// </para>
+        /// <para>
+        /// <b>What generalises and what does not.</b> The <c>work/egraph</c> harness's original
+        /// measurement — a textbook corpus of 16 expressions, all of which saturated — was made
+        /// under a much <i>larger</i> rule set (313 rules, off the public registry's string-length
+        /// <see cref="RewriteRuleGrowth"/> proxy), before the <see cref="Soundness"/> filter existed
+        /// and before any rule here could e-match at all, so it does not describe this population —
+        /// a different source, a different filter, a different matcher — and should not be cited as
+        /// though it still does without being re-run. Even re-run, a corpus
+        /// saturating says the graph stopped growing on those inputs; it did not and could not say
+        /// that of every expression <c>Simplify</c> is asked to handle. Pass a budget that reflects
+        /// that this is still being found out, not one sized for how much the caller can afford to
+        /// lose.
+        /// </para>
+        /// </remarks>
+        public static Transformation EqualitySaturation(WorkBudget budget, CostModel costModel)
+            => new EqualitySaturationTransformation(
+                budget ?? throw new ArgumentNullException(nameof(budget)),
+                costModel ?? throw new ArgumentNullException(nameof(costModel)));
+
+        /// <summary>
+        /// Test-only visibility into how many rules <see cref="EqualitySaturation"/> currently
+        /// draws from -- the field itself is <see langword="private"/> on a
+        /// <see langword="private"/> nested class, which a test in another assembly cannot reach
+        /// any other way. Exists so a collapse back toward the old
+        /// all-<see cref="RewriteRuleGrowth.Unknown"/> state — the rule population silently
+        /// shrinking to nothing, the way it once did before this was measured — fails a test
+        /// instead of going unmeasured again.
+        /// </summary>
+        internal static int EqualitySaturationSafeRuleCount => EqualitySaturationTransformation.SafeRuleCount;
+
+        /// <summary>
+        /// Brings an expression to the least of the forms the rules can reach from it, over an
+        /// e-graph — <a href="https://github.com/asc-community/AngouriMath/issues/746">#746</a>
+        /// tier 2's "canonicalisation framework built on" the rewrite graph.
+        /// </summary>
+        /// <param name="budget">What bounds the search. See <see cref="EqualitySaturation"/>.</param>
+        /// <param name="widest">
+        /// The widest <see cref="RewriteRuleGrowth"/> admitted, as a ceiling over
+        /// <see cref="RewriteRuleGrowth.Collects"/>, <see cref="RewriteRuleGrowth.Rearranges"/>,
+        /// <see cref="RewriteRuleGrowth.Expands"/>. This is the knob that matters — see the
+        /// measurement below.
+        /// </param>
+        /// <remarks>
+        /// <para>
+        /// <b>How this differs from <see cref="Canonicalization"/>, which is a rule pass.</b> A
+        /// pass rewrites and commits: having applied a rule it is standing on the result, and if
+        /// recognising an equality needed a <i>larger</i> intermediate form, the pass cannot get
+        /// there and back. A graph does not commit — it holds every form at once and chooses at
+        /// the end — so it can pass through a bigger writing to reach a smaller one.
+        /// </para>
+        /// <para>
+        /// <b>That difference is measured, and the measurement says the ceiling matters less than
+        /// it looks.</b> Two rewrite chains run from each of 1458 generated expressions produced
+        /// <b>no divergent pair at all</b> under <see cref="RewriteRuleGrowth.Collects"/> ∪
+        /// <see cref="RewriteRuleGrowth.Rearranges"/>: those rules are confluent on that corpus,
+        /// so a pass already reaches the same form a graph would, and over that ceiling this
+        /// earns nothing at all. Widening it barely helps — over six expression pairs equal only
+        /// through a larger intermediate form, <see cref="RewriteRuleGrowth.Rearranges"/> proved
+        /// two and <see cref="RewriteRuleGrowth.Expands"/>, all nine expanding rules added, proved
+        /// <i>the same two</i>. Only <see cref="RewriteRuleGrowth.Unknown"/> — which admits the
+        /// 270 rules whose growth nobody judged, against 52 that were — proved a third.
+        /// </para>
+        /// <para>
+        /// <b>Why the default is nonetheless the narrow ceiling.</b> Because the widest one is
+        /// where the risk is, not merely where the rules are: the <c>work/egraph</c> harness
+        /// measured a 7,147× blow-up over the undirected rule set — a different mechanism (term
+        /// enumeration, no budget, no pre-filter) on the same question. Six pairs completing
+        /// inside their budget is not evidence against that. So each step up is offered and none
+        /// is assumed, and the caller who takes one is the caller who sets the budget.
+        /// </para>
+        /// <para>
+        /// <b>What this is not.</b> Not a canonical form <i>for the language</i> — no such thing
+        /// exists here, since zero-equivalence is undecidable, and
+        /// <c>Docs/Contributing/CanonicalForm.md</c> states that boundary. It is a canonical form
+        /// <i>modulo these rules and this budget</i>: equal trees mean the rules proved the two
+        /// expressions equal, different trees mean they did not, and a budget that ran out is
+        /// reported rather than hidden. Nothing in the library calls this — like
+        /// <see cref="Canonicalization"/> it is offered, not applied.
+        /// </para>
+        /// </remarks>
+        /// <remarks>
+        /// <para>
+        /// <b>Built on <see cref="Canonicalization"/> rather than beside it.</b> The graph does
+        /// not sort a commutative operand pair: the rules that do build their replacement in code,
+        /// so their <see cref="RewriteRuleGrowth"/> is <see cref="RewriteRuleGrowth.Unknown"/> and
+        /// no ceiling admits them — measured, by <c>x + y</c> and <c>y + x</c> canonicalising to
+        /// themselves. Nor does it flatten <c>(x + y) + a</c> against <c>x + (y + a)</c>, which
+        /// are different trees that print alike. The rule pass does both, is already measured
+        /// idempotent and order-independent, and is not improved by being written again — so it
+        /// runs on each side of the graph step: once so that equal inputs enter the graph as one
+        /// tree, and once so that what extraction rebuilt leaves as one.
+        /// </para>
+        /// </remarks>
+        public static Transformation CanonicalizationOverGraph(WorkBudget budget, RewriteRuleGrowth widest)
+            => Canonicalization
+                .Then(new GraphCanonicalizationTransformation(
+                    budget ?? throw new ArgumentNullException(nameof(budget)), widest))
+                .Then(Canonicalization);
+
+        /// <summary>
+        /// <see cref="CanonicalizationOverGraph(WorkBudget, RewriteRuleGrowth)"/> over the rules
+        /// that do not expand, which is the ceiling
+        /// <see cref="EqualitySaturation"/> also draws from.
+        /// </summary>
+        /// <param name="budget">What bounds the search.</param>
+        public static Transformation CanonicalizationOverGraph(WorkBudget budget)
+            => CanonicalizationOverGraph(budget, RewriteRuleGrowth.Rearranges);
+
+        /// <summary>
         /// Replaces every occurrence of <paramref name="what"/> with
         /// <paramref name="with"/>, as <see cref="Entity.Substitute(Entity, Entity)"/> does.
         /// </summary>
@@ -261,12 +583,146 @@ namespace AngouriMath.Core.Transformations
             [ConcurrentField]
             internal static readonly LevelledCache Factorization = new();
 
+            [ConstantField]
+            internal static readonly LevelledCache RuleBasedFactorization = new();
+
             private readonly Transformation?[] cached = new Transformation?[Highest - Lowest + 1];
 
             internal Transformation For(int level, Func<int, Transformation> make)
                 => level < Lowest || level > Highest
                     ? make(level)
                     : cached[level - Lowest] ??= make(level);
+        }
+
+        private sealed class EqualitySaturationTransformation : Transformation
+        {
+            /// <summary>
+            /// Every rule in <see cref="Matching.MatchedRules.All"/> whose
+            /// <see cref="Matching.MatchedRule.Growth"/> is known not to expand and whose
+            /// <see cref="Matching.MatchedRule.Soundness"/> is at least <see cref="Soundness.SoundUnderAssumptions"/>
+            /// -- the real pattern-tree classification (Task 4), not the public registry's
+            /// string-length proxy, and a per-rule <see cref="Soundness"/> check the previous,
+            /// public-surface-sourced version of this field had no way to make (it filtered by
+            /// Growth alone). Computed once: the registry does not change while the process runs.
+            /// </summary>
+            [ConstantField]
+            private static readonly IReadOnlyList<Matching.MatchedRule> SafeRules
+                = Saturation.RulesUpTo(RewriteRuleGrowth.Rearranges);
+
+            /// <summary>
+            /// <see cref="SafeRules"/>.Count, for <see cref="Transformation.EqualitySaturationSafeRuleCount"/>
+            /// to forward -- this class is <see langword="private"/>, so even an
+            /// <see langword="internal"/> member here is only visible within
+            /// <see cref="Transformation"/>'s own body, never from another assembly.
+            /// </summary>
+            internal static int SafeRuleCount => SafeRules.Count;
+
+            private readonly WorkBudget budget;
+            private readonly CostModel costModel;
+
+            internal EqualitySaturationTransformation(WorkBudget budget, CostModel costModel)
+                => (this.budget, this.costModel) = (budget, costModel);
+
+            public override string Name => $"equality-saturation[{costModel.Name}]";
+
+            public override TransformationRelation Relation => TransformationRelation.Equivalence;
+
+            // The rules this draws from are a mix of Sound and SoundUnderAssumptions, and a
+            // rule set's own tier is already the minimum over what it contains -- so the
+            // weakest tier represented is the honest claim for the whole of what this used,
+            // the same convention every rule set in the registry already follows.
+            public override Soundness Soundness => Soundness.SoundUnderAssumptions;
+
+            /// <remarks>
+            /// <para>
+            /// <b>What this reports to a <see cref="RewriteRecording"/>, and what it does not.</b>
+            /// The pass as a whole, and nothing finer. A rule set records each firing because a
+            /// firing there <i>is</i> the rewrite -- the node it matched leaves and the
+            /// replacement takes its place. A firing here is not: it adds another member to an
+            /// e-class, every member of which is already believed equal, and the answer is then
+            /// chosen by <c>EGraph.Extract</c> from all of them at once. Most firings
+            /// contribute nothing to what extraction picked, and none of them is a step on a route
+            /// from the input to the output, because there is no route -- that is the whole point
+            /// of saturating rather than rewriting. Reporting them as
+            /// <see cref="RewriteStep"/>s would name rewrites that are not in the answer.
+            /// </para>
+            /// <para>
+            /// So one edge, input to output, under this transformation's own
+            /// <see cref="Name"/>. That is a true statement at the grain a derivation is read at,
+            /// and it is what was missing: a caller who opened a recording round this used to get
+            /// a real rewrite with an empty derivation, and nothing to distinguish
+            /// "introspection cannot see this" from "there was nothing to see".
+            /// </para>
+            /// </remarks>
+            protected override Entity? ApplyCore(Entity input)
+            {
+                // Read once, before the work: nothing here should pay for a recording nobody
+                // opened, which is the same reason RewriteRuleSet.ApplyOnce reads it once.
+                var recording = RewriteRecording.Current;
+                var mark = recording?.Mark() ?? 0;
+                var output = Saturate(input);
+                if (recording is not null && output is not null && !output.Equals(input))
+                    recording.Note(input, output, null, Name, mark);
+                return output;
+            }
+
+            private Entity? Saturate(Entity input)
+            {
+                var graph = new EGraph();
+                var root = graph.AddEntity(input);
+                graph.Rebuild();
+
+                var ledger = BudgetLedger.For(Name, budget);
+                Saturation.Run(graph, SafeRules, ledger, costModel.Cost);
+                ledger.Report();
+                return graph.Extract(root, costModel.Cost) ?? input;
+            }
+        }
+
+        /// <summary>
+        /// <see cref="Transformation.CanonicalizationOverGraph(WorkBudget, RewriteRuleGrowth)"/>.
+        /// </summary>
+        private sealed class GraphCanonicalizationTransformation : Transformation
+        {
+            private readonly WorkBudget budget;
+            private readonly RewriteRuleGrowth widest;
+            private readonly IReadOnlyList<Matching.MatchedRule> rules;
+
+            internal GraphCanonicalizationTransformation(WorkBudget budget, RewriteRuleGrowth widest)
+                => (this.budget, this.widest, rules)
+                    = (budget, widest, Saturation.RulesUpTo(widest));
+
+            public override string Name => $"canonical-over-graph[{widest}]";
+
+            public override TransformationRelation Relation => TransformationRelation.Equivalence;
+
+            // The weakest tier represented in what it may use, which is the convention every rule
+            // set in the registry already follows.
+            public override Soundness Soundness => Soundness.SoundUnderAssumptions;
+
+            /// <inheritdoc cref="EqualitySaturationTransformation.ApplyCore"/>
+            protected override Entity? ApplyCore(Entity input)
+            {
+                var recording = RewriteRecording.Current;
+                var mark = recording?.Mark() ?? 0;
+
+                var graph = new EGraph();
+                var root = graph.AddEntity(input);
+                graph.Rebuild();
+
+                var ledger = BudgetLedger.For(Name, budget);
+                Saturation.Run(graph, rules, ledger, CostModel.Default.Cost);
+                ledger.Report();
+
+                // The least member, not the cheapest: a cost model ties, and a tie would make the
+                // answer depend on which member was reached first, which is exactly the thing a
+                // canonical form may not depend on. See EntityOrder.
+                var output = graph.ExtractLeast(root, EntityOrder.Canonical) ?? input;
+
+                if (recording is not null && !output.Equals(input))
+                    recording.Note(input, output, null, Name, mark);
+                return output;
+            }
         }
 
         private sealed class RationalCanonicalizationTransformation : Transformation
@@ -279,6 +735,64 @@ namespace AngouriMath.Core.Transformations
 
             protected override Entity? ApplyCore(Entity input)
                 => RationalFunction.TryCanonicalize(input, out var canonical) ? canonical : null;
+        }
+
+        private sealed class PolynomialFactorizationTransformation : Transformation
+        {
+            public override string Name => "polynomial-factorization";
+
+            public override TransformationRelation Relation => TransformationRelation.Equivalence;
+
+            public override Soundness Soundness => Soundness.Sound;
+
+            // Total rather than declining, because a step that returns null makes the whole
+            // chain decline -- `Then` has no notion of an optional part, and `Factorization` is
+            // a chain. `InnerSimplification` is total for the same reason. So "nothing to
+            // factor" is the input handed back, not a refusal.
+            protected override Entity? ApplyCore(Entity input)
+            {
+                // A product is taken apart and each factor asked separately, rather than being
+                // handed over whole. Replacing the rules' product would change answers that were
+                // never the complaint -- the order two factors come out in is arbitrary and
+                // theirs is the one on record -- but *declining* it leaves a real gap: the rules
+                // take a numeric content out and hand back `2 * (x ^ 3 - 1)`, and the remainder
+                // is exactly the shape #1018 is about. Asking each factor keeps every factor the
+                // rules found and splits the ones they could not.
+                if (input is Entity.Mulf)
+                {
+                    Entity? rebuilt = null;
+                    var moved = false;
+                    foreach (var factor in Entity.Mulf.LinearChildren(input))
+                    {
+                        var piece = Factored(factor) ?? factor;
+                        moved |= !ReferenceEquals(piece, factor);
+                        rebuilt = rebuilt is null ? piece : rebuilt * piece;
+                    }
+                    return moved && rebuilt is not null ? rebuilt : input;
+                }
+                return Factored(input) ?? input;
+            }
+
+            /// <summary>
+            /// <paramref name="input"/> factored by the polynomial layer, or <see langword="null"/>
+            /// where it does not factor.
+            /// </summary>
+            /// <remarks>
+            /// Each of its variables is tried in turn and the first that yields a genuine product
+            /// wins, which is deterministic because <see cref="Entity.Vars"/> is. Trying them all
+            /// rather than guessing a main one is what makes <c>x ^ 4 - y ^ 4</c> come out whole
+            /// however the caller wrote it.
+            /// </remarks>
+            private static Entity? Factored(Entity input)
+            {
+                if (input is Entity.Mulf or Entity.Powf)
+                    return null;
+                foreach (var variable in input.Vars)
+                    if (MathS.Polynomials.Factor(input, variable) is { } factored
+                        && factored is Entity.Mulf or Entity.Powf)
+                        return factored;
+                return null;
+            }
         }
 
         private sealed class InnerSimplificationTransformation : Transformation
@@ -295,16 +809,25 @@ namespace AngouriMath.Core.Transformations
         private sealed class SimplificationTransformation : Transformation
         {
             private readonly int level;
+            private readonly CostModel? costModel;
 
-            internal SimplificationTransformation(int level) => this.level = level;
+            internal SimplificationTransformation(int level, CostModel? costModel)
+                => (this.level, this.costModel) = (level, costModel);
 
-            public override string Name => $"simplify[{level}]";
+            public override string Name
+                => costModel is null ? $"simplify[{level}]" : $"simplify[{level}, {costModel.Name}]";
 
             public override TransformationRelation Relation => TransformationRelation.Equivalence;
 
             public override Soundness Soundness => Soundness.SoundUnderAssumptions;
 
-            protected override Entity? ApplyCore(Entity input) => Simplificator.Simplify(input, level);
+            protected override Entity? ApplyCore(Entity input)
+            {
+                if (costModel is null)
+                    return Simplificator.Simplify(input, level);
+                using var _ = MathS.Settings.ComplexityCriteria.Set(costModel.Cost);
+                return Simplificator.Simplify(input, level);
+            }
         }
 
         private sealed class ExpansionTransformation : Transformation

@@ -57,21 +57,29 @@ namespace AngouriMath
             /// The factorisation; the input itself where it is irreducible over the
             /// rationals, which is an answer and not a refusal; or <see langword="null"/>
             /// where <paramref name="expr"/> is not a polynomial in
-            /// <paramref name="variable"/> alone with rational coefficients, where its degree
-            /// is above 32, or where the factoriser declined.
+            /// <paramref name="variable"/> with rational or polynomial coefficients, or where
+            /// the question is past what the factoriser will do.
             /// </returns>
             /// <remarks>
             /// <para>
-            /// Zassenhaus: square-free decomposition, Berlekamp's factorisation modulo a
-            /// prime, Hensel lifting to a power of it above Mignotte's bound, and
-            /// recombination — and the factors are multiplied back and compared with the
-            /// input before they are returned.
+            /// <b>In one variable, Zassenhaus:</b> square-free decomposition, Berlekamp's
+            /// factorisation modulo a prime, Hensel lifting to a power of it above Mignotte's
+            /// bound, and recombination — and the factors are multiplied back and compared with
+            /// the input before they are returned. The degree bound is 32.
             /// </para>
             /// <para>
-            /// <b>Univariate only.</b> A polynomial in more than one variable is refused
-            /// rather than answered: <c>Factor("x * y + y", "x")</c> is <see langword="null"/>
-            /// and not <c>x * y + y</c>, because handing back the input would say that
-            /// <c>y * (x + 1)</c> does not exist.
+            /// <b>In more than one, two things are tried in order.</b> First the content in
+            /// <paramref name="variable"/> — the common divisor of the coefficients, which is a
+            /// polynomial in the other variables — is taken out. Then whatever remains is
+            /// factored by <b>Kronecker's substitution</b>, which writes the exponent vector as a
+            /// numeral in mixed radix and reads a one-variable factorisation back. Its ceiling is
+            /// a degree budget rather than a variable count: the image has degree the product of
+            /// the radices less one, so three variables of degree 2 fit and four do not.
+            /// </para>
+            /// <para>
+            /// <b>A refusal is possible and a wrong answer is not.</b> Every candidate factor is
+            /// checked by exact division before it is kept, and the assembled factors are divided
+            /// back into the input.
             /// </para>
             /// </remarks>
             /// <example>
@@ -85,16 +93,30 @@ namespace AngouriMath
             /// Console.WriteLine(MathS.Polynomials.Factor("x ^ 2 + 1", "x"));
             /// // x ^ 2 + 1        -- irreducible over Q, which is an answer
             ///
-            /// Console.WriteLine(MathS.Polynomials.Factor("x * y + y", "x") is null);
-            /// // True             -- more than one variable, so it declines
+            /// Console.WriteLine(MathS.Polynomials.Factor("x * y + y", "x"));
+            /// // y * (x + 1)      -- the content in x is taken out first
+            ///
+            /// Console.WriteLine(MathS.Polynomials.Factor("x ^ 2 - y ^ 2", "x"));
+            /// // (x + y) * (x - y)
+            ///
+            /// Console.WriteLine(MathS.Polynomials.Factor("x ^ 12 - y ^ 12", "x") is null);
+            /// // True             -- past the substitution's degree budget
             /// </code>
             /// </example>
             public static Entity? Factor(Entity expr, Variable variable)
+                => Assemble(PolynomialFactorization.FactorComplete(expr, variable), variable)
+                   ?? FactorAfterTakingOutTheContent(expr, variable);
+
+            /// <summary>
+            /// A factorisation as an expression, or <see langword="null"/> where there was none.
+            /// </summary>
+            private static Entity? Assemble(
+                PolynomialFactorization.Factorization? factorization, Variable variable)
             {
-                if (PolynomialFactorization.FactorComplete(expr, variable) is not { } factorization)
+                if (factorization is not { } settled)
                     return null;
                 Entity? product = null;
-                foreach (var part in factorization.Parts)
+                foreach (var part in settled.Parts)
                 {
                     var piece = part.Factor.ToEntity(variable);
                     if (part.Multiplicity > 1)
@@ -103,9 +125,141 @@ namespace AngouriMath
                 }
                 if (product is null)
                     return null;
-                return factorization.Constant.CompareTo(ERational.One) == 0
+                return settled.Constant.CompareTo(ERational.One) == 0
                     ? product
-                    : Rational.Create(factorization.Constant) * product;
+                    : Rational.Create(settled.Constant) * product;
+            }
+
+            /// <summary>
+            /// The factorisation of a polynomial whose coefficients in <paramref name="variable"/>
+            /// are themselves polynomials, where taking out their common divisor leaves something
+            /// this can factor — or <see langword="null"/> where it does not.
+            /// </summary>
+            /// <remarks>
+            /// <para>
+            /// <see cref="PolynomialFactorization"/> works over ℚ, so a coefficient that is not a
+            /// rational number stops it before it starts and every polynomial in more than one
+            /// variable was refused. Some of them do not need factorising over a bigger ring at
+            /// all: <c>x * y + y</c> is <c>y</c> times something univariate, and only the <c>y</c>
+            /// was in the way.
+            /// </para>
+            /// <para>
+            /// So the content in <paramref name="variable"/> — the greatest common divisor of the
+            /// coefficients, which is a polynomial in the other variables — is taken out first,
+            /// using the same multivariate machinery <see cref="Gcd"/> is built from, and what
+            /// remains goes down the ordinary path. Where the content is a constant that path
+            /// has nothing to offer, and <see cref="KroneckerFactorization"/> answers instead —
+            /// <c>x ^ 2 - y ^ 2</c> is <c>(x + y) * (x - y)</c>, which is a factorisation over
+            /// ℚ(y) reached by substitution rather than by lifting.
+            /// </para>
+            /// </remarks>
+            private static Entity? FactorAfterTakingOutTheContent(Entity expr, Variable variable)
+            {
+                if (Index(expr, expr, variable) is not var (variables, index))
+                    return null;
+                if (variables.Count < 2)
+                    return null;
+                if (MultivariatePolynomial.TryParse(expr, index) is not { } poly)
+                    return null;
+                var main = index[variable];
+                var others = new List<int>(variables.Count - 1);
+                for (var i = 0; i < variables.Count; i++)
+                    if (i != main)
+                        others.Add(i);
+                if (PolynomialGcd.ContentIn(poly, main, others, 0) is not { } content)
+                    return null;
+                if (poly.DivideExact(content) is not { } primitive)
+                    return null;
+
+                // What is left may still have polynomial coefficients, and it can be factored
+                // anyway while the substitution's ceiling allows -- see KroneckerFactorization.
+                var rest = Assemble(
+                    PolynomialFactorization.FactorComplete(primitive.ToEntity(variables), variable),
+                    variable)
+                    ?? Kronecker(primitive, variables, index, variable);
+                if (rest is null)
+                    return null;
+                return content.IsConstant && content.DivideExact(content) is not null
+                       && SameAsOne(content)
+                    ? rest
+                    : content.ToEntity(variables) * rest;
+            }
+
+
+            /// <summary>Whether a constant polynomial is 1, so that it need not be printed.</summary>
+            private static bool SameAsOne(MultivariatePolynomial poly)
+                => poly.IsConstant && poly.CoefficientOf(0).CompareTo(ERational.One) == 0;
+
+            /// <summary>
+            /// The factorisation of a polynomial in more than one variable, as an expression.
+            /// </summary>
+            /// <remarks>
+            /// Kronecker's substitution: see <see cref="KroneckerFactorization"/> for what it
+            /// does, what it refuses, and why a wrong answer is not among the things it can do.
+            /// </remarks>
+            private static Entity? Kronecker(
+                MultivariatePolynomial poly, IReadOnlyList<Variable> variables,
+                IReadOnlyDictionary<Variable, int> index, Variable variable)
+            {
+                if (variables.Count < 2)
+                    return null;
+                if (KroneckerFactorization.Factor(poly, index[variable]) is not { } factors)
+                    return null;
+
+                // What the factors multiply to, so that whatever they do not account for can be
+                // put back. `KroneckerFactorization.Factor` returns factors "each of positive
+                // degree in main" -- a constant content is deliberately not among them, and it
+                // is this method's job to reinstate it. It was not, so `4 * x^2 - 4 * y^2` came
+                // back as `(x + y) * (x - y)`: a factorisation that is not equal to what it
+                // factored. https://github.com/asc-community/AngouriMath/issues/1092
+                //
+                // Recovered by exact division rather than by tracking the content separately,
+                // which is what the rest of this layer does with a claim it could get wrong: if
+                // the quotient is not there, or is not a constant, the assembled product does
+                // not account for the polynomial and there is no answer to give.
+                var assembled = MultivariatePolynomial.One(poly.VariableCount);
+                foreach (var factor in factors)
+                    if (assembled.Multiply(factor) is not { } grown)
+                        return null;
+                    else
+                        assembled = grown;
+                if (poly.DivideExact(assembled) is not { IsConstant: true } leftOver)
+                    return null;
+                // One factor is an answer and not a refusal: the substitution has established
+                // that the polynomial does not factor, and a caller that took the content out of
+                // it -- which is who calls this -- still has a factorisation to assemble. The
+                // one-variable path says the same thing the same way, Factor("x ^ 2 + 1", "x")
+                // being x ^ 2 + 1.
+                // Repeated factors are collected into a power, as the one-variable path does:
+                // the recombination finds a square as the same factor twice, and printing it
+                // twice would be a different answer to the same question depending on which
+                // path answered it.
+                Entity? product = null;
+                var pieces = new List<Entity>();
+                foreach (var factor in factors)
+                    pieces.Add(factor.ToEntity(variables));
+                var taken = new bool[pieces.Count];
+                for (var i = 0; i < pieces.Count; i++)
+                {
+                    if (taken[i])
+                        continue;
+                    var multiplicity = 1;
+                    for (var j = i + 1; j < pieces.Count; j++)
+                        if (!taken[j] && pieces[i] == pieces[j])
+                        {
+                            taken[j] = true;
+                            multiplicity++;
+                        }
+                    var piece = multiplicity > 1 ? pieces[i].Pow(multiplicity) : pieces[i];
+                    product = product is null ? piece : product * piece;
+                }
+                if (product is null)
+                    return null;
+                // The content goes in front, where the one-variable path and
+                // FactorAfterTakingOutTheContent both put it, so the same polynomial reads the
+                // same way whichever path answered it.
+                var content = leftOver.ToEntity(variables);
+                return content == Integer.One ? product : content * product;
             }
 
             /// <summary>
@@ -290,7 +444,7 @@ namespace AngouriMath
                 if (!PolynomialFactoring.TryGetRationalCoefficients(
                         expr, variable, leastTerms: 1, leastDegree: 1,
                         IntegerPolynomial.MaxDegree, out var rational))
-                    return null;
+                    return MultivariateSquareFreePart(expr, variable);
                 var denominator = EInteger.One;
                 foreach (var coefficient in rational)
                     denominator = coefficient.Denominator
@@ -303,6 +457,50 @@ namespace AngouriMath
                 if (primitive.DivideExact(repeated) is not { } distinct)
                     return null;
                 return distinct.PrimitivePart().ToEntity(variable);
+            }
+
+            /// <summary>
+            /// The same, where the coefficients in <paramref name="variable"/> are polynomials
+            /// themselves rather than rational numbers.
+            /// </summary>
+            /// <remarks>
+            /// <para>
+            /// <c>p / gcd(p, dp/dx)</c> is the square-free part whatever ring the coefficients
+            /// live in — a repeated factor appears in the derivative one time fewer than in the
+            /// polynomial, so dividing by the common part leaves each distinct factor exactly
+            /// once. The univariate path above says exactly that over ℤ. Nothing about it is
+            /// univariate except the representation it was written against, and the multivariate
+            /// one has all three operations: <c>DerivativeIn</c>, the recursive
+            /// <see cref="PolynomialGcd"/> that <see cref="Gcd"/> is already built from, and
+            /// exact division.
+            /// </para>
+            /// <para>
+            /// Reached only where the rational path declined, so nothing that already answered
+            /// can change.
+            /// </para>
+            /// </remarks>
+            private static Entity? MultivariateSquareFreePart(Entity expr, Variable variable)
+            {
+                if (Index(expr, expr, variable) is not var (variables, index))
+                    return null;
+                if (MultivariatePolynomial.TryParse(expr, index) is not { } poly)
+                    return null;
+                var main = index[variable];
+                // A polynomial constant in the variable has no square-free part in it to speak
+                // of, and the univariate path refuses that case too.
+                if (poly.DegreeIn(main) < 1)
+                    return null;
+                var derivative = poly.DerivativeIn(main);
+                if (derivative.IsZero)
+                    return null;
+                var order = new int[variables.Count];
+                for (var i = 0; i < order.Length; i++)
+                    order[i] = i;
+                if (PolynomialGcd.Gcd(poly, derivative, order, 0) is not { } repeated)
+                    return null;
+                if (poly.DivideExact(repeated) is not { } distinct)
+                    return null;
+                return distinct.Normalized().ToEntity(variables);
             }
 
             /// <summary>

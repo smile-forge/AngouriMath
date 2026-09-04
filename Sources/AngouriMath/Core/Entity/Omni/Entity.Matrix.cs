@@ -46,7 +46,8 @@ namespace AngouriMath
             private Matrix(GenTensor innerMatrix, bool toCopy)
             {
                 if (innerMatrix.Shape.Length != 2)
-                    throw new InvalidMatrixOperationException("Only matrices and vectors are supported");
+                    throw new InvalidMatrixOperationException(
+                        $"Only matrices and vectors are supported, and this tensor has {innerMatrix.Shape.Length} dimensions");
                 if (toCopy)
                     InnerMatrix = innerMatrix.Copy(false);
                 else
@@ -63,7 +64,9 @@ namespace AngouriMath
                 New(GenTensor.CreateTensor(InnerMatrix.Shape, indices => operation(InnerMatrix.GetValueNoCheck(indices))));
             internal Matrix Elementwise(Matrix other, Func<Entity, Entity, Entity> operation) =>
                 InnerMatrix.Shape != other.InnerMatrix.Shape
-                ? throw new InvalidMatrixOperationException("Arguments should be of the same shape to apply elementwise operation")
+                ? throw new InvalidMatrixOperationException(
+                    "An elementwise operation needs both arguments of the same shape, and these are "
+                    + $"{InnerMatrix.Shape} and {other.InnerMatrix.Shape}")
                 : New(GenTensor.CreateTensor(InnerMatrix.Shape, indices =>
                         operation(InnerMatrix.GetValueNoCheck(indices), other.InnerMatrix.GetValueNoCheck(indices))));
             /// <inheritdoc/>
@@ -136,7 +139,8 @@ namespace AngouriMath
                 /// <exception cref="NotSufficientlySupportedException">Always.</exception>
                 public byte[] Serialize(Entity a)
                 {
-                    throw new NotSufficientlySupportedException("Serializing a matrix is not supported");
+                    throw new NotSufficientlySupportedException(
+                        $"Serializing `{a.Stringize()}` is not supported: an expression has no byte form here");
                 }
 
                 /// <summary>
@@ -251,7 +255,10 @@ namespace AngouriMath
             /// Thrown if the matrix has size different from 1x1.
             /// </exception>
             public Entity AsScalar()
-                => IsScalar ? this[0, 0] : throw new InvalidMatrixOperationException("A 1x1 matrix expected");
+                => IsScalar
+                    ? this[0, 0]
+                    : throw new InvalidMatrixOperationException(
+                        $"A 1x1 matrix expected, and `{Stringize()}` is {RowCount}x{ColumnCount}");
 
             /// <summary>Changes the order of axes in matrix</summary>
             public Matrix T => t.GetValue(static @this =>
@@ -263,23 +270,37 @@ namespace AngouriMath
             this);
             private LazyPropertyA<Matrix> t;
 
-            // We do not need to use Gaussian elimination here
-            // since we anyway get N! memory use.
-            // Gaussian elimination is also not merely no cheaper, it is wrong here:
-            // it leaves the pivots as literal divisions, so the expression it returns
-            // is undefined wherever a pivot vanishes -- at points where the
-            // determinant itself is perfectly well defined. The determinant of a
-            // matrix over a commutative ring is a polynomial in its entries, and
-            // Laplace expansion never divides, so there is nothing to exclude.
+            // Two algorithms, and which one runs is decided by the entries rather than by the
+            // size. Bareiss' fraction-free elimination is O(n^3) and Laplace expansion is
+            // O(n!), so Bareiss is tried first -- but it needs entries it can read as
+            // polynomials over the rationals, and it says so by declining rather than by
+            // guessing. https://github.com/asc-community/AngouriMath/issues/999
+            //
+            // *Ordinary* Gaussian elimination is not merely no cheaper than Laplace, it is
+            // wrong here: it leaves the pivots as literal divisions, so the expression it
+            // returns is undefined wherever a pivot vanishes -- at points where the
+            // determinant itself is perfectly well defined. The determinant of a matrix over a
+            // commutative ring is a polynomial in its entries, and neither Laplace nor Bareiss
+            // ever leaves a quotient, so there is nothing to exclude either way.
             // https://github.com/asc-community/AngouriMath/issues/992
             /// <summary>
-            /// Finds the symbolical determinant via Laplace's method
+            /// The determinant, by fraction-free elimination where the entries are polynomials
+            /// over the rationals and by Laplace expansion otherwise.
             /// </summary>
+            /// <remarks>
+            /// Both are exact and neither divides in a way that could exclude a point, so the
+            /// two agree wherever both apply; which one ran is a fact about cost, not about the
+            /// answer. Laplace is optimal for a fully symbolic matrix, whose determinant
+            /// genuinely has n! terms.
+            /// </remarks>
             public Entity? Determinant => determinant.GetValue(
-                static @this => 
+                static @this =>
                 {
-                    if (!@this.IsSquare) 
+                    if (!@this.IsSquare)
                         return null;
+                    if (Functions.PolynomialDeterminant.Of(@this.RowCount, (r, c) => @this[r, c])
+                        is { } byElimination)
+                        return byElimination.InnerSimplified;
                     return @this.InnerMatrix.DeterminantLaplace().InnerSimplified;
                 },
                 this
@@ -311,7 +332,8 @@ namespace AngouriMath
                 =>
                 m1.InnerMatrix.Shape != m2.InnerMatrix.Shape
                 ?
-                throw new InvalidMatrixOperationException("Cannot apply the operator to matrices or vectors of different shapes")
+                throw new InvalidMatrixOperationException(
+                    $"Cannot add matrices or vectors of shapes {m1.InnerMatrix.Shape} and {m2.InnerMatrix.Shape}")
                 :
                 ToMatrix(new Matrix(GenTensor.PiecewiseAdd(m1.InnerMatrix, m2.InnerMatrix)).InnerSimplified);
 
@@ -324,7 +346,8 @@ namespace AngouriMath
                 =>
                 m1.InnerMatrix.Shape != m2.InnerMatrix.Shape
                 ?
-                throw new InvalidMatrixOperationException("Cannot apply the operator to matrices or vectors of different shapes")
+                throw new InvalidMatrixOperationException(
+                    $"Cannot subtract matrices or vectors of shapes {m1.InnerMatrix.Shape} and {m2.InnerMatrix.Shape}")
                 :
                 ToMatrix(new Matrix(GenTensor.PiecewiseSubtract(m1.InnerMatrix, m2.InnerMatrix)).InnerSimplified);
 
@@ -359,7 +382,8 @@ namespace AngouriMath
             public Matrix Pow(int exp)
                 => IsSquare switch
                 {
-                    false => throw new InvalidMatrixOperationException("Cannot find power of a non-square matrix"),
+                    false => throw new InvalidMatrixOperationException(
+                        $"Cannot raise a non-square matrix to a power, and this one is {RowCount}x{ColumnCount}"),
                     true => new(InnerMatrix.MatrixPower(exp))
                 };
 
@@ -382,7 +406,8 @@ namespace AngouriMath
             public Matrix TensorPower(int exp)
                 => exp switch
                 {
-                    <= 0 => throw new InvalidMatrixOperationException("Tensor power argument must be positive"),
+                    <= 0 => throw new InvalidMatrixOperationException(
+                        $"A tensor power argument must be positive, and {exp} was given"),
                     1 => this,
                     _ when exp % 2 is 0 => TensorProduct(this, this).TensorPower(exp / 2),
                     _ => TensorProduct(TensorProduct(this, this).TensorPower(exp / 2), this)
@@ -494,7 +519,8 @@ namespace AngouriMath
             public Matrix WithElement(int index, Entity newElement)
             {
                 if (!IsVector && !IsRowVector)
-                    throw new InvalidMatrixOperationException("Should be vector or row vector");
+                    throw new InvalidMatrixOperationException(
+                        $"A vector or a row vector is expected, and `{Stringize()}` is {RowCount}x{ColumnCount}");
                 var newInner = InnerMatrix.Copy(false);
                 if (IsVector)
                     newInner[index, 0] = newElement;
@@ -532,7 +558,8 @@ namespace AngouriMath
             private static void WithRow(GenTensor newInner, int rowId, Matrix newRow)
             {
                 if (!newRow.IsRowVector)
-                    throw new InvalidMatrixOperationException("Must be a row vector");
+                    throw new InvalidMatrixOperationException(
+                        $"A row vector is expected, and `{newRow.Stringize()}` is {newRow.RowCount}x{newRow.ColumnCount}");
                 for (int i = 0; i < newInner.Shape[1]; i++)
                     newInner[rowId, i] = newRow[0, i];
             }
@@ -555,7 +582,8 @@ namespace AngouriMath
             private static void WithColumn(GenTensor newInner, int colId, Matrix newCol)
             {
                 if (!newCol.IsVector)
-                    throw new InvalidMatrixOperationException("Must be a column vector vector");
+                    throw new InvalidMatrixOperationException(
+                        $"A column vector is expected, and `{newCol.Stringize()}` is {newCol.RowCount}x{newCol.ColumnCount}");
                 for (int i = 0; i < newInner.Shape[0]; i++)
                     newInner[i, colId] = newCol[i];
             }

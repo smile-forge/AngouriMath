@@ -33,7 +33,8 @@ namespace AngouriMath
             /// </summary>
             /// <exception cref="ElementInSetAmbiguousException">Thrown when </exception>
             public bool Contains(Entity entity)
-                => TryContains(entity, out var res) ? res : throw new ElementInSetAmbiguousException("Cannot determine whether the element is in the set");
+                => TryContains(entity, out var res) ? res : throw new ElementInSetAmbiguousException(
+                    $"Cannot determine whether `{entity.Stringize()}` is an element of `{Stringize()}`");
 
             /// <summary>
             /// Returns an empty set
@@ -80,9 +81,18 @@ namespace AngouriMath
         public Set SetSubtract(Entity anotherSet) => new SetMinusf(this, anotherSet);
 
         /// <summary>
-        /// The domain as the set of all its values — <see cref="Domain.Real"/> becomes the set
-        /// of reals — so a domain can be written wherever an expression is expected.
+        /// The set a domain names — <see cref="Domain.Real"/> becomes the set of reals — so one
+        /// of the five domains that name a set can be written wherever an expression is expected.
         /// </summary>
+        /// <remarks>
+        /// <b>Partial, and deliberately so.</b> <see cref="Domain.Any"/> names no set, and this
+        /// throws <see cref="Core.Exceptions.NotSufficientlySupportedException"/> for it rather
+        /// than inventing one: a codomain that constrains nothing is a statement about a node,
+        /// and there is no collection of values it corresponds to. Where a domain is used as a
+        /// constraint rather than as a set — a guard, a narrowing, a reading — ask
+        /// <see cref="Domain"/> directly and do not convert.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/996">#996</a>
+        /// </remarks>
         public static implicit operator Entity(Domain domain) => Set.SpecialSet.Create(domain);
 
     }

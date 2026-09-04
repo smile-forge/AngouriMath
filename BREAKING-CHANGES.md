@@ -21,6 +21,39 @@ read first.
 
 | Silent? | What | Was | Is |
 |---|---|---|---|
+| **Silent** | `"limit(t * b, t, 0)".ToEntity().FreeVariables`, and every limit | `{ t, b }` — the variable it approaches along counted as free | `{ b }` |
+| **Silent** | `MathS.Polynomials.Factor("4 * x2 - 4 * y2", "x")`, and every multivariate polynomial whose content is a bare constant | `(x + y) * (x - y)` — **not equal to what it factored** | `4 * (x + y) * (x - y)` |
+| | `"2 * x3 - 2".ToEntity().Factorize()`, and every polynomial whose content the rules take out | `2 * (x ^ 3 - 1)` — the remainder left whole | `2 * (x - 1) * (x ^ 2 + x + 1)` |
+| | `"3^(x+1) - 2^(x-1)".ToEntity().SolveEquation("x")`, and every equation between two powers of numeric bases | `{ ln(0.04674569822628630438865471319331845734268426895141601562 ^ (1 / ln(2))) }` — a `double` promoted to a decimal | `{ -(ln(3) + ln(2)) / (ln(3) + -ln(2)) }` |
+| **Silent** | `MathS.Abs("x").WithCodomain(Domain.Any).Stringize()`, and every node widened to `Any` from a narrower default | `abs(x)` — reads back as `Real`, losing the widening | `domain(abs(x), Any)` |
+| **Silent** | `"domain(1/2, CC)".ToEntity()`, and every quotient of two integer literals annotated with the codomain its node type does not default to | `1/2` — the annotation dropped, equal to the unannotated literal | `1/2` carrying `Codomain = Complex`, which prints and reads back as `domain(1/2, CC)` |
+| | `"a in (a / 3; 3a)".ToEntity().Simplify()`, and every denominator but 2 | `a in (a / 3; 3 * a)` — left as written | `a > 0` |
+| | `MathS.Matrix(...).Determinant` on a symbolic matrix of polynomials | `a * d + -b * c`, Laplace's nested expansion | `a * d - b * c`, expanded — the same value, no larger |
+| | the same on a numeric matrix past 10x10 | did not return | 11x11 in 2 ms, 30x30 in 22 ms |
+| **Silent** | `MathS.Equations(...).Solve(...)` on a system neither internal path can finish | ran without a bound — cyclic-6 exceeded 20 s | `NotSufficientlySupportedException`, naming both paths |
+| | the same with `MathS.Settings.Budget` set below what the solve needs | answered anyway, the fall-through having no budget | raises |
+| | `"a in (a / 2; 0)".ToEntity().Simplify()`, and every interval demanding both signs | left as written | `False provided a in RR` |
+| | `new Entity[0].SumAll()`, and `Sumf.Sum` on an empty list | `AngouriBugException: At least 1 child required` | `0` |
+| | `new Entity[0].MultiplyAll()`, and `Mulf.Multiply` on an empty list | `AngouriBugException` | `1` |
+| | `MathS.Vector()` and `new Entity[0].ToVector()` | `IndexOutOfRangeException` — outside the documented hierarchy | `InvalidMatrixOperationException` |
+| | `"x3 - 1".ToEntity().Factorize()`, and every polynomial no rewrite rule has a rule for | `x ^ 3 - 1` — handed back whole | `(x - 1) * (x ^ 2 + x + 1)` |
+| | `"x^2/(x^4 + 1)".Integrate("x")`, and every quotient whose denominator is a biquadratic irreducible over `Q` | `integral(x ^ 2 / (x ^ 4 + 1), x)` — left unevaluated | the antiderivative, over the real quadratic factors |
+| | `"sqrt(x)/(1 + x^2)".Integrate("x")`, and every integrand a fractional power of the variable makes rational | `integral(sqrt(x) / (1 + x ^ 2), x)` — left unevaluated | the antiderivative |
+| | `"sqrt(tan(x))".Integrate("x")`, and every integrand that is a function of `tan(x)` alone and rational in it | `integral(sqrt(tan(x)), x)` — left unevaluated | the antiderivative |
+| | `"x^2/(x + 1)".Integrate("x")`, and every improper quotient of polynomials | `integral(x ^ 2 / (x + 1), x)` — left unevaluated | `x ^ 2 / 2 + -x + ln(x + 1) + C` |
+| | `MathS.Equations("2*x - 4*y - 12").Solve("x", "y")`, and every linear system with fewer equations than unknowns | `WrongNumberOfArgumentsException` | `[[6 + 2 * t_1, t_1]]` — the family of all its solutions |
+| | `Entity.DomainConditionIn(Domain)` | did not exist | the domain of definition for a **stated** reading, through the whole tree |
+| | `MathS.Polynomials.Factor("(y * x3 + 1) * (x4 - y3)", "x")`, and bivariate polynomials whose leading coefficient in the main variable is a polynomial | `null` — a refusal | `(x ^ 4 - y ^ 3) * (x ^ 3 * y + 1)` |
+| | `MathS.Polynomials.Factor("x7 - y7", "x")`, and bivariate polynomials whose substituted image over-factors | `null` — a refusal | `(x - y) * (x ^ 6 + x ^ 5 * y + … + y ^ 6)` |
+| | `MathS.Polynomials.Factor("x2 + y2 + z2 + w2 + 1", "x")`, and polynomials in enough variables generally | `null` — a refusal | the polynomial itself, meaning it does not factor |
+| **Silent** | `"x! = 0".ToEntity().Simplify()` | `False`, including at `x = -1` where `x!` has a pole and the statement is `NaN` | `False provided x in RR and (x >= 0 or not x in ZZ)` |
+| **Silent** | `"x! / x!".ToEntity().Simplify()`, and the same for any factorial over itself | `1`, including at `x = -1` where the quotient is `NaN` | `1 provided not x! = 0` |
+| **Silent** | `"(y < x) or (x = y)".ToEntity().Simplify()`, and three more disjunctions of a comparison with an equality written the other way round | `x <= y` — False at `x = 3, y = 2` where the input is True | `x >= y` |
+| **Silent** | `"x6 + x y + 1 = 0".ToEntity().Solve("x")`, and every equation no solver settles | `{  }` — there are no roots | `{ x : 1 + x ^ 6 + x * y = 0 }` — these are the roots, whichever they are |
+| **Silent** | `"(x - 1) * (x6 + x y + 1) = 0".ToEntity().Solve("x")` | `{ 1 }` | `{ 1 } \/ { x : 1 + x ^ 6 + x * y = 0 }` |
+| **Silent** | `"x6 + x y + 1 = 0 and x - 1 = 0".ToEntity().Solve("x")` | `{  }` | `{ x : x ^ 6 + x * y + 1 = 0 and x - 1 = 0 }` |
+| **Silent** | `"sum(k, k, 1, n)".ToEntity().FreeVariables`, and `product` | `{ k, n }` — the bound index counted as free | `{ n }` |
+| **Silent** | `"integral(t * b, t, 0, 1)".ToEntity().FreeVariables`, and every integral with limits | `{ b, t }` | `{ b }` |
 | | `"x ^ 3 - x > 0".ToEntity().Solve("x")`, and every polynomial inequality of degree three or more | `NotSufficientlySupportedException: Only linear and quadratic polynomial inequalities are supported` | `(-1; 0) \/ (1; +oo)` — the solution set |
 | **Silent** | `"a implies (b implies c)".ToEntity().Stringize()` | `a implies b implies c`, which reads back as `(a implies b) implies c` | `a implies (b implies c)` |
 | | `"(a implies b) implies c".ToEntity().Stringize()` | `(a implies b) implies c` | `a implies b implies c` |
@@ -33,7 +66,733 @@ read first.
 | **Silent** | `"-1 * (y mod z)".ToEntity().Stringize()` | `-y mod z` | `-(y mod z)` |
 | | any expression mixing a number with a `Complex` argument, `Compile`d in a NativeAOT app — `"x + 1".Compile<Complex, Complex>("x")` | `UncompilableNodeException: ... The binary operator Add is not defined for the types 'System.Numerics.Complex' and 'System.Numerics.Complex'` | the compiled function, answering as it does under the JIT |
 | | `Compile` to a nullable integral return type in a NativeAOT app | `AngouriBugException: IsNaN method expected for type System.Double`, which took the process down | the compiled function |
+| **Silent** | `"not (x = 1)".ToEntity().Solve("x")`, and every negation | `{  }` — no value satisfies it | `{ x : not x = 1 }` |
+| **Silent** | `"not (x > 1)".ToEntity().Solve("x")`, and every negated comparison | `{  }` | `(-oo; 1]` |
+| **Silent** | `"(x = 1) implies (x = 2)".ToEntity().Solve("x")`, and every implication | `{ 2 } \/ BB` — truth values in the solution set of a numeric question | `{ x : not x = 1 }` |
+| | `"domain((-oo; +oo), Any) = RR".ToEntity().Solve("x")`, and every unbounded interval widened to `Any` | `NotSufficientlySupportedException: There is no special set for domain Any` | `{  }` |
 | **Silent** | an app publishing with `PublishTrimmed` or NativeAOT | `AngouriMath.dll` was copied in whole, being unmarked | it is trimmed with the rest, since the assembly now declares `IsTrimmable` |
+| **Silent** | `"domain(x, ZZ)".ToEntity().Stringize()`, and `ToString`, and `EntityJsonConverter` | `x`, which reads back with `Codomain = Any` | `domain(x, ZZ)`, which reads back narrowed |
+| **Silent** | `"domain(sqrt(-1), RR)".ToEntity().Stringize()` | `sqrt(-1)`, which evaluates to `i` when read back | `domain(sqrt(-1), RR)`, which evaluates to `NaN` |
+| **Silent** | `"domain(x, ZZ)".ToEntity().Latexize()` | `x` | `{\left(x\right)}_{\mathbb{Z}}` |
+| **Silent** | `"x - domain(x, ZZ)".ToEntity().Simplify()`, and any sum mixing a node with a narrowed codomain and the same node without | `0` — the two were collected as one monomial | `x - domain(x, ZZ)`, left alone |
+| | every node type's own `Stringize()` and `Latexize()` overrides — `Entity.Sumf.Stringize()` and 129 more | declared on each node | declared once on `Entity`; still callable on every node, and an assembly compiled against 2.3.0 keeps working without a rebuild |
+| | `"x + 1 // done".ToEntity()`, and any input whose last line ends in a `//` comment | `UnhandledParseException: extraneous input '/'` | `x + 1` — the comment is skipped, as the block form already was |
+| | `MathS.Polynomials.Factor("x * y + y", "x")`, and any polynomial whose coefficients in the named variable share a common divisor | `null` — a refusal | `y * (x + 1)` |
+| | `MathS.Polynomials.SquareFreePart("(x - y) ^ 2 * (x + y)", "x")`, and any polynomial in more than one variable | `null` — a refusal | `x ^ 2 - y ^ 2` |
+| | `MathS.Polynomials.Factor("x ^ 2 - y ^ 2", "x")`, and polynomials in two variables of small enough bidegree | `null` — a refusal | `(x + y) * (x - y)` |
+| | a `switch` over `RewriteRuleGrowth` with no default arm | compiled | does not compile — there is a fourth value, `Unknown` |
+| **Silent** | `RewriteRules.RationalizeDenominator.Rules` | `[]` — the registry could not read the set | its two rules, addressable and named |
+| **Silent** | `RewriteRules.Power.ApplyOnce("ln(1 / x)")`, and every `log(_, 1/_)` and `log(1/_, _)` whose argument is not decidably a positive real | `-ln(x)`, which is wrong on the negative reals | `ln(1 / x)`, left alone |
+| **Silent** | `RewriteRules.Boolean.ApplyOnce("a and b or a")`, and two more orientations of absorption | left alone — the arm for that orientation was never written | `a` |
+| **Silent** | `RewriteRules.DivisionPreparing.Rules[0].Name`, and every rule of the twenty-seven sets now described from their data form | `Mulf(var any1, Divf(Integer(1), var any2))` — the `switch` arm's rendered pattern | `reciprocal-factor-becomes-a-quotient` |
+| | `RewriteRules.ExpandFactorialDivisions.Rules.Count`, and `FactorizeFactorialMultiplications` | `8` | `3` — the same rewrites, five of the eight arms being one commutative pattern |
+| | `RewriteRules.Boolean.Rules.Count` | `36` | `20` — a commutative pattern finds a shared operand wherever it sits |
+| | `RewriteRules.NumericNeat.Rules.Count`, and `Factorization` 22 -> 11 | `16` | `11` |
+| | `RewriteRules.Trigonometric.Rules.Count` | `43` | `33` |
+| | `RewriteRules.Power.Rules.Count` | `35` | `31` |
+| | `RewriteRules.Common.Rules.Count` | `100` | `62` |
+| | `RewriteRules.All.Sum(set => set.Rules.Count)` | `407` | `313` |
+| **Silent** | `RewriteRules.ExpandFactorialDivisions.Rules[0].Growth` | `Collects` — guessed from string length | `Unknown`; whether it collects depends on the offsets |
+| **Silent** | `RewriteStep.Soundness` on a rewrite whose rule declares a tier — `RewriteRules.SetOperator` on `A /\ A`, and every rewrite of the nineteen sets described from their data form | `SoundUnderAssumptions` — its rule set's tier, which is the minimum over every rule in the set | `Sound` — the rule's own |
+| **Silent** | `DerivationStep.Soundness` | its rule set's tier | the weakest tier any rewrite that actually fired inside the step holds at |
+| **Silent** | `"5 - (0; 1)".ToEntity().Simplify()`, and every interval subtracted from something | `(5; 4)` — a left end above its right, so the empty set | `(4; 5)` |
+| **Silent** | `"4.5 in (5 - (0; 1))".ToEntity().Simplify()` | `False` | `True` |
+| **Silent** | `"5 - [0; 1)".ToEntity().Simplify()` | `[5; 4)` — the openness left where it was | `(4; 5]` |
+| | `"3 * [2; 3]".ToEntity().Simplify()`, and every interval scaled by a constant | `3 * [2; 3]` — left alone | `[6; 9]` |
+| | `"[2; 3] / 2".ToEntity().Simplify()` | `[2; 3] / 2` | `[1; 3/2]` |
+| **Silent** | `"[2; 3) * (-1)".ToEntity().Simplify()` | `[2; 3) * (-1)` | `(-3; -2]` — reflected, ends and openness both |
+| | `"0 - [0; 1)".ToEntity().Simplify()` | `-[0; 1)` | `(-1; 0]` |
+| | `"2 * x + 4 * a".ToEntity().Factorize()`, and every sum whose whole coefficients share a divisor | `2 * x + 4 * a` — left alone | `2 * (x + 2 * a)` |
+| | `Transformation.Factorization.Name` | `… then polynomial-factorization` | `… then polynomial-factorization then numeric-content` |
+| **Silent** | `"arccotan(-1)".ToEntity().Simplify()`, and every negative argument the inverse-trigonometric table knows | `3/4 * pi` — the textbook range, and **not equal to `arccotan(-1)`**, whose value is `-pi/4` | `-1/4 * pi` |
+| | `"e ^ ln(x)".ToEntity().Simplify()`, and every exponential of a natural logarithm | `e ^ ln(x)` — left as written | `x` |
+| | `"a => a + 3".ToEntity()`, and every lambda written with an arrow | `UnhandledParseException` | `lambda(a, a + 3)` |
+| | `"sqrt(5 + 2 * sqrt(6))".ToEntity().Simplify()`, and every nested radical whose discriminant is a rational square | `sqrt(5 + 2 * sqrt(6))` — left as written | `sqrt(3) + sqrt(2)` |
+| | `"sum(k, k, 1, n)".ToEntity().Simplify()`, and every summation whose body is a polynomial in the index | `sum(k, k, 1, n)` — carried | `piecewise((n + n ^ 2) / 2 provided n >= 0, 0)` |
+| | `"sum(k, k, 1, 100000)".ToEntity().Simplify()`, and every concrete range past a hundred terms | `sum(k, k, 1, 100000)` — carried | `5000050000` |
+| | `"product(k, k, 1, n)".ToEntity().Simplify()`, and every product whose body is a monomial in the index | `product(k, k, 1, n)` — carried | `piecewise(n! provided n >= 1, 1)` |
+| | `"1/(x^2 + 1)^2".Integrate("x")`, and every proper rational function over a repeated irreducible quadratic | `integral(1 / (1 + x ^ 2) ^ 2, x)` — left unevaluated, after 2.9 s | `arctan(x) / 2 + C + 1/2 * x / (x ^ 2 + 1)`, in 0.11 s |
+| | `"x^2/(x^2 + 2)^2".Integrate("x")`, and every polynomial numerator over one | `integral(x ^ 2 / (x ^ 2 + 2) ^ 2, x)` — left unevaluated, after 93 s | the antiderivative, in 0.57 s |
+| | `"1/(x^2 - 1)^2".Integrate("x")`, and every repeated quadratic whose roots are real | `C - ln(x + -1) / 4 + ln(1 + 2 * x + x ^ 2) / 8 + -1/2 * x / (x ^ 2 + -1)` | `C - ln(1 + (-2) / (x + 1)) / 4 + -1/2 * x / (x ^ 2 + -1)` — the same value, one logarithm rather than two |
+
+### A repeated quadratic denominator is integrated
+
+`1/(x^2 + 1)^2` had no antiderivative, while `1/(x^2 - 1)^2` and `1/(x^2 + 2x + 1)^2` both did — a
+denominator with real roots comes apart into linear factors and never reached the gap. What was
+missing was the irreducible case
+([#180](https://github.com/asc-community/AngouriMath/issues/180)).
+
+```
+"1/(x^2 + 1)^2".Integrate("x")     was  integral(1 / (1 + x ^ 2) ^ 2, x)
+                                    is  arctan(x) / 2 + C + 1/2 * x / (x ^ 2 + 1)
+"x^2/(x^2 + 2)^2".Integrate("x")   was  integral(x ^ 2 / (x ^ 2 + 2) ^ 2, x)
+                                    is  (sqrt(2) * arctan(sqrt(2) * x / 2) * 2 + (-4) * x / (x ^ 2 + 2)) / 8
+                                          + C provided not x ^ 2 + 2 = 0
+```
+
+The condition on that second one is the library's own and it is true: the antiderivative has no
+value where the denominator vanishes. It is attached to some of these answers and not others, and I
+did not pin down what decides which — recorded as observed rather than explained.
+
+Writing `Q` for the quadratic, `u` for its derivative `2ax + b` and `D` for `4ac - b^2`, the
+identity `u^2 = 4aQ - D` turns the derivative of `u/Q^(m-1)` into an equation for the integral of
+`1/Q^m`, which is unrolled down to the single power the table already answered. It is an identity in
+`a`, `b` and `c` rather than a fact about signs, so one line serves both signs of the discriminant;
+`D = 0` is the sole exclusion, and the division by `D` is why. A numerator of higher degree is
+divided by `Q` first.
+
+**A denominator with real roots now takes this route rather than partial fractions.** The value is
+unchanged and the form is shorter — one logarithm where there were two — which is why the
+node-count metric that ranks candidates selects it. No test pinned the old spelling.
+
+**The cost, measured rather than estimated.** Where the integrand is rational this is between 26 and
+165 times faster, because `TryStandardIntegrals` runs before every search and a shape answered
+outright never enters the candidate exploration. Where the integrand is a transcendental function
+over a repeated quadratic — `sin(x)/(x^2 + 1)^2`, `e^x/(x^2 + 1)^2`, `ln(x)/(x^2 + 1)^2`, none of
+which has an elementary antiderivative — the same search now takes **3.4 to 10.8 times longer to
+conclude nothing**, because the sub-integral it used to fail on immediately now succeeds and
+integration by parts carries on from a larger expression. Both arms measured on one machine, master
+and branch, the same way:
+
+| | master | now |
+|---|---|---|
+| `1/(x^2 + 1)^2` | 2879 ms, unevaluated | **111 ms, answered** |
+| `x^2/(x^2 + 2)^2` | 92 990 ms, unevaluated | **565 ms, answered** |
+| `1/(x^4 + 1)^2` | 3811 ms | 3870 ms — the base is not quadratic, and nothing changes |
+| `ln(x)/(x^2 + 1)^2` | 15 034 ms, unevaluated | 51 072 ms, unevaluated |
+| `sin(x)/(x^2 + 1)^2` | 26 492 ms, unevaluated | 114 851 ms, unevaluated |
+| `e^x/(x^2 + 1)^2` | 7944 ms, unevaluated | 85 683 ms, unevaluated |
+
+That last group is a growth in integration by parts rather than in this rule, which those integrands
+never match; it is filed separately rather than fixed here, since bounding by-parts is a change to
+machinery every integral goes through.
+
+### A nested radical comes apart
+
+`sqrt(5 + 2*sqrt(6))` is a radical under a radical, and it is two plain ones added.
+
+```
+"sqrt(5 + 2 * sqrt(6))".Simplify()   was  sqrt(5 + 2 * sqrt(6))   is  sqrt(3) + sqrt(2)
+"sqrt(7 - 4 * sqrt(3))".Simplify()   was  as written              is  2 - sqrt(3)
+"sqrt(9 + 4 * sqrt(5))".Simplify()   was  as written              is  sqrt(5) + 2
+"sqrt(11 + 6 * sqrt(2))".Simplify()  was  as written              is  3 + sqrt(2)
+"sqrt(6 - 2 * sqrt(5))".Simplify()   was  as written              is  sqrt(5) - 1
+```
+
+Squaring `sqrt(x) + sqrt(y)` gives `x + y + 2*sqrt(x*y)`, so matching that against
+`a + b*sqrt(c)` makes `x` and `y` the roots of `t^2 - a*t + b^2*c/4`. They are rational exactly
+when `a^2 - b^2*c` is the square of a rational, and that is the whole test — decidable in exact
+arithmetic rather than a search. The sign of `b` chooses the sum or the difference, since squaring
+either gives `a + |b|*sqrt(c)`.
+
+**No condition is attached and none is owed.** A non-negative `a` and a non-negative discriminant
+are required before anything is built, and together they make the radicand, `x` and `y` all
+non-negative — so what fires is an identity between real numbers with no branch chosen. A negative
+`a` is refused rather than conditioned.
+
+**A radicand with no rational split is left as written**, `sqrt(1 + sqrt(2))` among them, and so
+is anything that is not `a + b*sqrt(c)`.
+
+**Where the denesting is longer, `Simplify` keeps the nested form.** `sqrt(2 + sqrt(3))` does come
+apart — to `(sqrt(6) + sqrt(2))/2` — and the nested spelling is the shorter of the two, so that is
+what comes back. The rule offers the alternative; the selection is by size, as it is everywhere
+else.
+
+One radicand is a boundary rather than a rule: `sqrt(3 + 2*sqrt(2))` is answered by the rule —
+applying the set gives `sqrt(2) + 1`, the shorter form — and `Simplify` nonetheless returns the
+nested one. There is a test pinning what happens; the cause is not established, and the obvious
+suspect was measured and ruled out.
+
+[#717](https://github.com/asc-community/AngouriMath/issues/717).
+
+### A polynomial summand is summed in closed form
+
+A summation wrote itself out term by term where the bounds were concrete and there were fewer
+than a hundred terms, and was carried otherwise. So a symbolic bound had no answer, and neither
+did a long concrete range — both now do, where the body is a polynomial in the index.
+
+```
+"sum(k, k, 1, n)".Simplify()        was  sum(k, k, 1, n)
+                                    is   piecewise((n + n ^ 2) / 2 provided n >= 0, 0)
+
+"sum(k, k, 1, 100000)".Simplify()   was  sum(k, k, 1, 100000)
+                                    is   5000050000
+```
+
+`sum(k^2, k, 1, n)` and `sum(k^3, k, 1, n)` come with it, as does any polynomial summand by
+linearity, a coefficient that does not mention the index — `sum(a*k^2 + b*k + c, k, 1, n)` — and a
+symbolic *lower* bound, `sum(k, k, m, n)` being `S(n) - S(m - 1)` like any other.
+
+**The condition is the entry.** `sum(k, k, 1, n)` is **not** `(n + n^2)/2` for every `n`. At
+`n = -2` the range is empty, and this library answers an empty range with the operator's identity
+— `sum(k, k, 5, 1)` is `0`, which has its own test — while the polynomial there is `1`. The
+identity holds exactly where `to >= from - 1`, so that is what is attached, with the empty-range
+value as the other branch. Where the bounds are concrete the condition is decidable and the whole
+thing collapses to a number, which is why the long range above is an integer and not a piecewise.
+
+SymPy prints the bare polynomial for the same input and is not making a mistake: it reads a
+reversed range as the negated sum over the flipped one, under which the identity needs no
+condition. The condition is what this library's different convention costs, and **code that
+expected a bare polynomial from `Simplify` gets a `Piecewise`.**
+
+**A bound that is a number and not a whole one is still carried.** The index runs over the
+integers, so `sum(k, k, 1, 5/2)` is `1 + 2`; the polynomial continued to `5/2` is `35/8`, which
+answers a different question. `+oo` is refused the same way, so an infinite series is untouched.
+
+**A product is unchanged, whatever its body.** `product(k, k, 1, n)` is still carried, and
+`factorial(n)` would be a wrong answer for it rather than a missing one: the empty product is `1`
+at every `n < 1`, and `factorial` is undefined at the negative integers. Answering it needs the
+same kind of condition the sum now carries, and is not done here. *It is done in the entry below,
+which gives it that condition.*
+
+No Bernoulli numbers are involved. The sum of a degree-`d` polynomial is a polynomial of degree
+`d + 1`, so `d + 2` of its values determine it, and those values are short sums computed directly;
+interpolating them recovers the coefficients exactly in rational arithmetic.
+
+[#717](https://github.com/asc-community/AngouriMath/issues/717).
+
+### A monomial body is multiplied in closed form
+
+The same for `product`, with the narrower reach a product has: a sum of two terms is the sum of
+their sums, and a product of two terms is not the product of their products in any way that
+helps. What separates is the body that **is** one term.
+
+```
+"product(k, k, 1, n)".Simplify()      was  product(k, k, 1, n)
+                                      is   piecewise(n! provided n >= 1, 1)
+
+"product(2, k, 1, 500)".Simplify()    was  product(2, k, 1, 500)
+                                      is   3273390607896141870013189696827599152216642046043064789483291368096133796404674554883270092325904157150886684127560071009217256545885393053328527589376
+```
+
+`product(k^2, k, 1, n)` is `(n!)^2`, `product(2 * k, k, 1, n)` is `n! * 2^n`, and a constant body
+needs no factorial at all — `product(c, k, m, n)` is `c^(n - m + 1)`, symbolic lower bound and
+all.
+
+**The condition is `to >= from`, where the sum's is `to >= from - 1`,** and the one point between
+them is the whole reason. At the empty range the closed form is `c^0`, which is `1` for every `c`
+except zero and undefined there, while the empty product is `1` for every `c` including zero.
+Giving that point to the identity branch keeps a value from becoming an undefinedness, and costs
+nothing, since both branches say `1` there.
+
+**A lower bound that is not a concrete integer of at least one is declined** where the index is in
+the body, rather than conditioned. `product(k, k, a, b)` is `b!/(a-1)!` only for `a >= 1`; below
+that the range runs through zero so the product is `0`, while `(a-1)!` is undefined. That cannot
+share a branch with the empty-range case, because `a < 1` does not make the range empty — a
+piecewise reading "identity otherwise" would be wrong there. So `product(k, k, 0, n)` and
+`product(k, k, m, n)` stay as written.
+
+**What is not one term is carried**, `product(k + 1, k, 1, n)` included. As for the sum, a bound
+that is a number and not a whole one is carried too.
+
+[#717](https://github.com/asc-community/AngouriMath/issues/717).
+
+### A lambda is written with an arrow as well as a call
+
+`a => a + 3` was a parse error and is now the same entity as `lambda(a, a + 3)`. Several
+parameters are the curried form the plan in
+[#495](https://github.com/asc-community/AngouriMath/issues/495) specifies — `a b => a + b` is
+`a => b => a + b`, which is `lambda(a, b, a + b)`.
+
+```
+"a => a + 3".ToEntity()                          was  UnhandledParseException
+                                                 is   lambda(a, a + 3)
+"a b => a + b".ToEntity()                        is   lambda(a, lambda(b, a + b))
+"apply(apply(a b => a + b, 1), 2)".Simplify()    is   3
+```
+
+**Nothing that parsed before parses differently.** `=` followed by `>` was not a token and not a
+parse, so no reading of any valid input has changed; `>=`, `->`, `=` and the rest are untouched,
+and there are tests pinning them. The `Lambda` node, beta reduction and currying were all already
+there — this is the syntax for them.
+
+**The arrow is read, not printed.** A lambda still prints as `lambda(x, x + 1)`, which is what
+keeps the round trip the printed form promises: several spellings may be read, exactly one is
+printed.
+
+**Every parameter must be a name**, which is what the plan says. `a 3 => 3` is refused, and so
+are `2 => 3` and `x + 1 => 2`. Those raised `UnhandledParseException` before and now raise
+`InvalidArgumentParseException` — still invalid, differently named. Code catching the parse
+exception by type around input like that will not catch this one.
+
+An index called `i` is the name rather than the imaginary unit, matching `lambda(i, i + 1)`,
+which it gets by reading its parameters through the same `Binding` the call form uses
+([#976](https://github.com/asc-community/AngouriMath/issues/976)).
+
+**Not in this change:** the rest of that plan's syntax — `f a b` for `apply(apply(f, a), b)`,
+`sin x` without brackets, and `sin (x)` with a space. Each of those changes what juxtaposition
+means, which is the decision [#286](https://github.com/asc-community/AngouriMath/issues/286) is
+about, and none of them is free the way the arrow is.
+
+[#495](https://github.com/asc-community/AngouriMath/issues/495).
+
+### The exponential of a natural logarithm folds
+
+`"e ^ ln(x)".ToEntity().Simplify()` was `e ^ ln(x)` and is `x`; so are `e ^ ln(2 * x)`,
+`e ^ ln(x + 1)` and `e ^ ln(sin(x))`. Nothing that had a value changes value.
+
+The identity was not missing. `2 ^ log(2, x)` has simplified to `x` throughout, and the rule that
+does it could not reach `e`: `ln(a)` is stored as `log(e, a)`, `e` is a `Constant` rather than a
+`Number`, and the pattern binds its base with `Any<Number>`, so the base never matched however the
+logarithm was written. That is
+[#994](https://github.com/asc-community/AngouriMath/issues/994) — every logarithm carrying a constant
+it does not mention — showing up as a missing simplification rather than as a printed one.
+
+Nothing is assumed. `b ^ log(b, a) = a` needs `ln(b)` to be non-zero, and `e` is decidably neither
+`0` nor `1`, which is exactly what the numeric arm cannot say about an arbitrary `Number` — so a
+symbolic base stays refused, and `1 ^ log(1, x)` is still `NaN` rather than `x`. It holds off the
+positive reals, on the principal branch: at `a = -3`, `ln(-3)` is `ln(3) + i*pi` and
+`e ^ (ln(3) + i*pi)` is `-3`. At `a = 0` no definedness moves either, since this library reads
+`ln(0)` as `-oo` and `e ^ (-oo)` as `0`, so both sides are `0`. It is labelled
+`SoundUnderAssumptions` rather than `Sound` because that last part is a branch convention.
+
+**No ODE changes.** The issue was filed believing this cost
+[#241](https://github.com/asc-community/AngouriMath/issues/241)'s solver its integrating factor. It
+does not: `OrdinaryDifferentialEquation` carries its own `ExponentialOf` helper that already folds
+`e ^ ln(u)`, so the eight first-order linear equations measured across this change come back
+**byte-identical**. *An earlier version of this entry went one step further and said the rule makes
+that helper redundant, with removing it left as its own change. It does not, and the removal was
+measured rather than done: the solver asks `InnerSimplified`, which does not carry the rewrite rules,
+so `e ^ ln(x)` reaches it unfolded. Deleting the helper fails three `OrdinaryDifferentialEquationTest`
+cases, deleting only its `e ^ ln(u)` arm fails two, and calling `Simplify` at the call site instead
+still fails one — because nothing in the library folds `e ^ (k ln u)` to `u ^ k`, which is the shape
+an antiderivative of `k/x` gives. The helper stays, and its doc comment now records why.*
+
+[#1138](https://github.com/asc-community/AngouriMath/issues/1138).
+
+### Every rule set describes the rules it runs
+
+`RewriteRuleSet.Rules` is what the registry reports a set is made of, and for most of the library's
+life it came from `RuleRegistryGenerator` reading the `switch` that defined the set. Twenty-seven of
+the thirty sets stopped running that `switch` some releases ago — they run
+`MatchedRuleSet.ApplyHere` — and went on describing it. Thirteen of them now describe what they run.
+
+**All twenty-seven of them**, over six changes. Thirteen had **no described arm at all**, so repointing them could only add
+metadata: `CollapseMultipleFractions`, the three `CommonDenominator` sets, `DivisionPreparing`,
+`ExpandFactorialDivisions`, `ExpandMultipleAngle`, `ExpandTrigonometric`, `Expansion`,
+`FactorizeFactorialMultiplications`, `NormalTrigonometricForm`, `PhiFunction` and
+`PolynomialLongDivision`. Six more are **one arm to one rule**, so their existing descriptions carry
+across unchanged and the rules that had none gain one: `CollapseTrigonometricFunctions`,
+`InvertNegativeMultipliers`, `InvertNegativePowers`, `PerfectSquare`, `PolynomialGcdCancellation` and
+`SetOperator`. `RationalizeDenominator` was already reading its data form. And `Boolean` is the first
+where the identities were **written** rather than carried across: its comments named the laws
+(De Morgan, absorption, contraposition) where an identity was wanted, so all twenty were read off the
+rules' own patterns and replacements. `NumericNeat` and `Factorization` follow it, their comments
+already being identities and needing only the arrow turned into an equals sign.
+
+Nothing is left on the `switch` that does not run it. The three `CanonicalOrder` sets still *run*
+theirs, so describing it is not a mismatch and they are not targets.
+the `CanonicalOrder` family — still *run* their `switch`, so describing it is not a mismatch.
+
+Four things move, and only the second changes a count:
+
+| | Was | Is |
+|---|---|---|
+| `Rules[i].Name` | the arm's rendered pattern, `Mulf(var any1, Divf(Integer(1), var any2))` | the rule's name, `reciprocal-factor-becomes-a-quotient` |
+| `Rules.Count`, for the two factorial sets | `8` | `3` |
+| `Rules[i].Description` | `null` for 38 of these arms and set for 8 | the identity, `a * (1 / b) = a / b`, for all 59 |
+| `Rules[i].Soundness` | `null` — an arm declares no tier | the rule's own tier |
+
+**The three counts that change are not rewrites lost.** They are arms the data form writes once.
+`Boolean`'s thirty-six become twenty: eight arms of distributivity are two rules, because a
+commutative pattern finds the shared operand wherever it sits, and absorption's four-arms-each is one
+rule twice. `ExpandFactorialDivisions` and `FactorizeFactorialMultiplications` are eight arms each
+written as three, the other five being one rewrite spelled once for each side a factorial can sit on.
+`NumericNeat`'s sixteen are eleven, six of them being three rules written once per side a negative
+factor can sit on; `Factorization`'s twenty-two are eleven for the same reason, and
+`Trigonometric`'s forty-three are thirty-three, `Power`'s thirty-five are thirty-one, and
+`Common`'s hundred are sixty-two — the largest collapse, and the same cause: four orientations of a
+shared-factor rule are one commutative pattern on each side of the sum. Every other repointed set is
+one arm to one rule. Across the registry, 407 becomes **313** while the number of described rules
+goes from **95 to 292** — which is every rule the registry now reports.
+
+`Rules[i].Growth` also stops being a guess. `AsAddressable` used to infer it by comparing the lengths
+of the two rendered pattern strings — the only thing available to a generator reading source text —
+and the exact node count disagrees 23 times in 322. Mostly it corrects a wrong answer; for
+`ExpandFactorialDivisions` it replaces one with `Unknown`, which is right, since a quotient of
+factorials collects when the offsets are one apart and expands when they are five.
+
+`PatternSource` changes too, from the C# the arm was written in to the pattern the matcher holds —
+`Mulf(var a, Divf(1, var b))` for the same rule. Both are source text for reading; neither is
+something to match against.
+
+### A step is justified by the rule that fired, not by the set it came from
+
+`RewriteStep.Soundness` read `RuleSet.Soundness` and nothing else, so every rewrite of a set reported
+the same tier. A set's tier is the **minimum** over its rules, and one conditional rule is enough to
+make a set of a hundred report as conditional: all thirty sets in the registry declare
+`SoundUnderAssumptions`, while **181 of the 322 rules written as data are `Sound`** — they hold for
+every complex argument, with nothing assumed.
+
+A rewrite now reports its rule's own tier where the rule has one, and its set's where it has not:
+
+```csharp
+using var recording = RewriteRecording.Start();
+RewriteRules.SetOperator.ApplyOnce(@"A /\ A".ToEntity());
+recording.Dispose();
+recording.Steps[0].Soundness           // was SoundUnderAssumptions, is Sound
+recording.Steps[0].RuleSet.Soundness   // still SoundUnderAssumptions, and correctly so
+```
+
+The fallback is not a claim. A rule read off a `switch` declares no tier, so `RewriteRule.Soundness`
+is `null` there and the set's tier is what is known — see *Nineteen rule sets describe the rules they
+run* above for which sets carry per-rule tiers today.
+
+`DerivationStep.Soundness` changes for the same reason and one more: it is now the weakest tier any
+rewrite that **actually fired** inside the step holds at, rather than its set's minimum over rules
+the step may never have reached. A pass of nine unconditional rewrites and one conditional one is
+still a conditional pass; a pass of ten unconditional ones now says so.
+
+### A negative `arccotan` is negative
+
+`arccotan` here is `arctan(1/x)`, with range `(-pi/2, pi/2]` — **not** the textbook `(0, pi)`. The
+inverse-trigonometric table read it as the textbook `pi/2 - arctan(x)`. The two agree on every
+positive argument and on nothing negative, so a closed form came back that was not the value:
+
+```csharp
+"arccotan(-1)".ToEntity().EvalNumerical()   // -0.7853981633974483…, which is -pi/4
+"arccotan(-1)".ToEntity().Simplify()        // was 3/4 * pi, is -1/4 * pi
+```
+
+`Simplify` and `EvalNumerical` disagreeing about a constant is the sharpest form this kind of defect
+takes, and it reached every table value with a negative argument: `arccotan(-sqrt(3))` was `5/6 * pi`
+and is `-1/6 * pi`, `arccotan(-(2 + sqrt(3)))` was `11/12 * pi` and is `-1/12 * pi`.
+
+**The rule for `arctan(x) + arccotan(x)` had the convention right all along** — it answers `pi/2` for
+a non-negative argument and `-pi/2` for a negative one, which is
+[#887](https://github.com/asc-community/AngouriMath/issues/887). The table's docstring claimed to
+take "the same reading of it" and took the opposite one; the comment asserting agreement is what let
+the disagreement stand. The two now agree, and `ArccotanTableSignTest` measures the range at a
+positive argument, a negative one and zero rather than recalling it.
+
+`arccos` uses the same complement helper and is **unaffected**: its range is `[0, pi]` and `arcsin`'s
+is `[-pi/2, pi/2]`, so `pi/2 - arcsin(x)` holds for every argument. That is asserted too, so that a
+later tidy-up cannot merge the two paths back together.
+
+### Subtracting an interval turns it round
+
+`Minusf` slid an interval's ends without swapping them, so subtracting one produced an interval whose
+left end was above its right — which is empty:
+
+```csharp
+"5 - (0; 1)".ToEntity().Simplify()          // was (5; 4), is (4; 5)
+"4.5 in (5 - (0; 1))".ToEntity().Simplify() // was False, is True
+```
+
+The second line is the one that matters: a wrong answer reached through the operation an interval
+exists for.
+
+**The openness is the half that is easy to miss.** `5 - (0; 1]` is `[4; 5)` — the *excluded* 1 becomes
+the excluded lower end 4, and the *included* 0 becomes the included upper end 5. Swapping the ends and
+leaving the flags where they were would give `(4; 5]`: right about the width and wrong at both ends,
+which no test on the printed form alone would catch. `IntervalSubtractionTest` asserts membership as
+well for that reason.
+
+An interval *minus* a number was always right and stays right — `(0; 1) - 5` is `(-5; -4)`, and
+nothing turns round because nothing is being reflected.
+
+**What this does not fix**, and the boundary is asserted rather than left implicit: `0 - x` is negated
+by an earlier arm, so `0 - [0; 1)` is `-[0; 1)` and stops there. Negating an interval is multiplying
+one, and `Mulf` has no interval case at all — `(0; 1) * 2` is left alone too. That is
+[#322](https://github.com/asc-community/AngouriMath/issues/322)'s remaining half, and it needs a sign
+analysis this does not: a negative multiplier turns the interval round exactly as subtraction does,
+and a zero one collapses it to a point.
+
+### An interval scaled by a constant is an interval
+
+`Sumf` and `Minusf` had interval cases and `Mulf` and `Divf` had none, so `(0; 1) + 1` answered
+`(1; 2)` while `(0; 1) * 2` was handed back. Three rows of `Core/Sets/Arithmetics` recorded that
+asymmetry as the expected behaviour, directly beneath the two addition rows that answer.
+
+```csharp
+"3 * [2; 3]".ToEntity().Simplify()   // was 3 * [2; 3], is [6; 9]
+"[2; 3] / 2".ToEntity().Simplify()   // was [2; 3] / 2, is [1; 3/2]
+```
+
+**A negative factor reflects the interval**, so its ends swap and their openness swaps with them —
+exactly as subtracting one does:
+
+| | Is |
+|---|---|
+| `[2; 3) * (-1)` | `(-3; -2]` |
+| `(2; 3] / (-1)` | `[-3; -2)` |
+| `0 - [0; 1)` | `(-1; 0]` |
+
+The last of those is not a subtraction at all: `0 - x` is negated by an earlier arm, so it reaches
+`Mulf` as `-1 * [0; 1)` and is answered there. It is the case the subtraction fix above had to leave
+out, and it comes back for free.
+
+**An unknown sign is answered by not answering.** `(0; 1) * k` for a symbolic `k` is one interval
+when `k` is positive and the reflected one when it is negative, so picking either would be choosing
+which; it is left unevaluated, which is what an unevaluated node means.
+
+Two boundaries, asserted rather than left to be discovered. `(0; 1) * 0` still answers the number `0`
+rather than the set `{ 0 }` — that arm is over every `Entity` and not only intervals, and moving it
+would change matrices and finite sets with it. And `2 / (0; 1)` is left alone: a constant over an
+interval straddling zero is two unbounded pieces rather than one interval, so there is no `Interval`
+to answer with.
+
+This is [#322](https://github.com/asc-community/AngouriMath/issues/322)'s arithmetic half. Its body
+says it "will be possible once we implement quantifiers"; scaling needs none — it is monotone in the
+factor's sign and in nothing else. Applying a non-monotonic function to an interval, which is the
+other half, is still open: `ln((0; 1))` is `(-oo; 0)` because `ln` increases, but `sin((0; 7))` needs
+to know where the turning points are.
+
+### `Factorize` takes out a common whole factor
+
+`2x + 2a` has been collected under plain `Simplify` for some time — the factorisation rules take out a
+factor that appears *identically* in every term. A factor that is only a common **divisor** was not,
+and still is not, because `2 * (x + 2 * a)` is a node larger than `4 * a + 2 * x` and
+`Entity.SimplifiedRate` will not choose it.
+
+`Factorize` now does, which is
+[#195](https://github.com/asc-community/AngouriMath/issues/195)'s "forcefully… but not peacefully":
+
+```csharp
+"2 * x + 4 * a".ToEntity().Factorize()          // was 2 * x + 4 * a, is 2 * (x + 2 * a)
+"4 * x + 6 * y + 10 * z".ToEntity().Factorize() // is 2 * (2 * x + 3 * y + 5 * z)
+"2 * x - 4 * a".ToEntity().Factorize()          // is 2 * (x - 2 * a)
+"2 * x + 4 * a".ToEntity().Simplify()           // unchanged: 4 * a + 2 * x
+```
+
+**`Simplify` is untouched**, and that is asserted rather than assumed — the peaceful behaviour is
+what a caller who did not ask to factorise still gets.
+
+Whole numbers only, and a positive content. `x/2 + a/3` has a common divisor too, but taking `1/6` out
+puts a quotient outside the sum rather than a factor, which is a different rewrite. And the sign stays
+inside: `-2x - 4a` is `2 * (-x - 2a)` rather than `-2 * (x + 2a)`, because which of those is wanted is
+a second question.
+
+A term whose coefficient is not a whole number stops the whole sum rather than contributing a 1: the
+content of `2x + a/3` is not 1, it is a thing this does not compute, and answering 1 would say there
+was nothing to take.
+
+`Transformation.NumericContentExtraction` is the step on its own, and `Transformation.Factorization`'s
+`Name` gains it — a chain names its parts.
+
+### A negation is no longer answered with the empty set
+
+`StatementSolver.Solve` had arms for equality, the connectives, the four comparisons, membership,
+`provided` and `piecewise` — and none for `not`, so every negation fell through to `Set.Empty`.
+The empty set is a positive claim, *no x satisfies this*, and it was false of all of them
+([#1127](https://github.com/asc-community/AngouriMath/issues/1127)). This is the defect
+[#1036](https://github.com/asc-community/AngouriMath/issues/1036) fixed for equations, left
+standing for negation.
+
+**Was** — every one of these, and 1 is not a solution of the first while 0 is:
+
+```
+"not (x = 1)".ToEntity().Solve("x")             {  }
+"not (x > 1)".ToEntity().Solve("x")             {  }
+"not (x >= 1)".ToEntity().Solve("x")            {  }
+"not not (x = 1)".ToEntity().Solve("x")         {  }
+"not (x > 1 or x < -1)".ToEntity().Solve("x")   {  }
+"not (x in RR)".ToEntity().Solve("x")           {  }
+```
+
+**Is** — the negation pushed inward as far as there is an arm for it, and named as a set-builder
+where there is not:
+
+```
+"not (x = 1)".ToEntity().Solve("x")             { x : not x = 1 }
+"not (x > 1)".ToEntity().Solve("x")             (-oo; 1]
+"not (x >= 1)".ToEntity().Solve("x")            (-oo; 1)
+"not not (x = 1)".ToEntity().Solve("x")         { 1 }
+"not (x > 1 or x < -1)".ToEntity().Solve("x")   [-1; 1]
+"not (x in RR)".ToEntity().Solve("x")           { x : not x in RR }
+```
+
+A negated comparison is answered as the comparison it is, which is what
+`RewriteRules.InequalityEquality` already says; a negated connective is pushed inward by De Morgan,
+which is the direction that reaches an arm. What neither reaches is answered as written.
+
+### An implication is solved without naming a universe
+
+`Solve` answered `a implies b` with `Codomain \ solve(a) \/ solve(b)`, taking the complement
+inside the **statement node's** codomain. That is `Boolean` for every implication, so a numeric
+question came back with a solution set containing `True` and `False`
+([#996](https://github.com/asc-community/AngouriMath/issues/996)). A `TODO` on the line asked for a
+universal set to subtract from instead; neither is needed, because *the values of `x` where `a`
+does not hold* is `{ x : not a }`, which names no universe at all.
+
+**Was** — the domain in the answer is the codomain of the `implies` node, not anything the question
+was asked over:
+
+```
+"(x = 1) implies (x = 2)".ToEntity().Solve("x")     { 2 } \/ BB
+"x > 1 implies x > 0".ToEntity().Solve("x")         BB \ (1; +oo) \/ (0; +oo)
+"A implies B".ToEntity().Solve("A")                 BB \ { True }
+```
+
+**Is** — a set-builder for the antecedent's complement, united with what the consequent settles:
+
+```
+"(x = 1) implies (x = 2)".ToEntity().Solve("x")     { x : not x = 1 }
+"x > 1 implies x > 0".ToEntity().Solve("x")         { x : not x > 1 } \/ (0; +oo)
+"A implies B".ToEntity().Solve("A")                 { A : not A }
+```
+
+The boolean row carries the same information it did before — `BB \ { True }` and `{ A : not A }`
+are the same set — without asserting that `A` ranges over `BB`. The implication solver is no more
+complete than it was: `solve(b, x)` is still empty where `b` does not mention `x`, so
+`A implies True` is `{ A : not A }` rather than `BB`, as it was before.
+
+### An unbounded interval over no constraint is left as written
+
+`(-oo; +oo)` simplifies to the domain it is an interval of. Widened to `Domain.Any` there is no such
+domain — `Any` is a codomain and not a set — and asking for one threw out of `Solve` on input a
+caller can write ([#996](https://github.com/asc-community/AngouriMath/issues/996)).
+
+**Was**
+
+```
+"domain((-oo; +oo), Any) = RR".ToEntity().Solve("x")
+    NotSufficientlySupportedException: There is no special set for domain Any
+```
+
+**Is** — the interval is left alone, and the statement is solved:
+
+```
+"domain((-oo; +oo), Any) = RR".ToEntity().Solve("x")    {  }
+"domain((-oo; +oo), Any)".ToEntity().Simplify()         domain((-oo; +oo), Any)
+"(-oo; +oo)".ToEntity().Simplify()                      RR                        unchanged
+"domain((-oo; +oo), CC)".ToEntity().Simplify()          CC                        unchanged
+```
+
+### An equation nothing settled is no longer answered with the empty set
+
+`Solve` and `SolveEquation` returned an empty `FiniteSet` for two different things: an equation
+shown to have no roots, and an equation every solver in the chain declined. The empty set is a
+positive claim — *no x satisfies this* — so the second of those was a wrong answer rather than a
+graceful failure ([#1036](https://github.com/asc-community/AngouriMath/issues/1036),
+[#746](https://github.com/asc-community/AngouriMath/issues/746) tier 4).
+
+**Was** — indistinguishable, and false for the second column:
+
+```
+"x6 + x y + 1 = 0".ToEntity().Solve("x")            {  }        six roots for every y
+"sin(x) + x + y = 0".ToEntity().Solve("x")          {  }
+"e^x + x + y = 0".ToEntity().Solve("x")             {  }
+"x6 + x y + 1".ToEntity().SolveEquation("x")        {  }
+"e^x = 0".ToEntity().Solve("x")                     {  }        genuinely none
+"abs(x) = -1".ToEntity().Solve("x")                 {  }        genuinely none
+```
+
+**Is** — the equation itself, as the set of the x that satisfy it. It names the same set and
+asserts of it only what was established:
+
+```
+"x6 + x y + 1 = 0".ToEntity().Solve("x")            { x : 1 + x ^ 6 + x * y = 0 }
+"sin(x) + x + y = 0".ToEntity().Solve("x")          { x : sin(x) + x = -y }
+"e^x + x + y = 0".ToEntity().Solve("x")             { x : e ^ x + x = -y }
+"x6 + x y + 1".ToEntity().SolveEquation("x")        { x : 1 + x ^ 6 + x * y = 0 }
+"e^x = 0".ToEntity().Solve("x")                     {  }        unchanged
+"abs(x) = -1".ToEntity().Solve("x")                 {  }        unchanged
+```
+
+Turning Newton's method off leaves nothing numerical either, and those answers move the same way.
+A search over finitely many starting points inside a bounded region finding nothing is a fact about
+the search:
+
+```
+using var _ = MathS.Settings.AllowNewton.Set(false);
+
+"x5 + 3x + 1 = 0".ToEntity().Solve("x")             was {  }   is { x : x ^ 5 + 3 * x = -1 }
+"sin(x) * x - 3 = 0".ToEntity().Solve("x")          was {  }   is { x : sin(x) * x = 3 }
+
+"x + sqrt(x^0.1 + a) + c".ToEntity().SolveEquation("x")
+    was {  }   is { x : sqrt(a + x ^ (1/10)) + c + x = 0 }
+"(x + 6)^(1/6) + x + x3 + a".ToEntity().SolveEquation("x")
+    was {  }   is { x : (6 + x) ^ (1/6) + x + x ^ 3 = -a }
+"2 ^ (x sin(x)) + 4 ^ (x sin(x)) + c".ToEntity().SolveEquation("x")
+    was {  }
+    is  { x : sin(x) * x = ln(((-1 - sqrt(1 - 4 * c)) / 2) ^ (1 / ln(2)))
+              or sin(x) * x = ln(((-1 + sqrt(1 - 4 * c)) / 2) ^ (1 / ln(2))) }
+```
+
+The last of those is the shape of it: the exponential solver did settle the equation in
+`2 ^ (x sin(x))`, and it was the inversion of `x * sin(x)` that had nothing to say. What comes back
+now is the half that was solved, with the half that was not left standing as a condition.
+
+An answer that is partly settled keeps the part that is, so a product one of whose factors was
+solved comes back as a union rather than as the factor's roots alone:
+
+```
+"(x - 1) * (x6 + x y + 1) = 0".ToEntity().Solve("x")
+    was  { 1 }
+    is   { 1 } \/ { x : 1 + x ^ 6 + x * y = 0 }
+
+"x6 + x y + 1 = 0 or x - 1 = 0".ToEntity().Solve("x")
+    was  { 1 }
+    is   { 1 } \/ { x : 1 + x ^ 6 + x * y = 0 }
+
+"x6 + x y + 1 = 0 implies x - 1 = 0".ToEntity().Solve("x")
+    was  { 1 } \/ BB
+    is   { 1 } \/ (BB \ { x : 1 + x ^ 6 + x * y = 0 })
+```
+
+A conjunction with an unsettled side is answered as the conjunction. Intersecting a finite set with
+a condition keeps the elements whose membership could not be decided, so taking the intersection
+here would have replaced one false claim with another — `{ 1 }` says 1 solves
+`x^6 + x*y + 1 = 0`, and it does so only at `y = -2`:
+
+```
+"x6 + x y + 1 = 0 and x - 1 = 0".ToEntity().Solve("x")
+    was  {  }
+    is   { x : x ^ 6 + x * y + 1 = 0 and x - 1 = 0 }
+```
+
+**What this means for callers.** `Solve` has always been typed `Set` and has always been able to
+return an `Interval`, a `ConditionalSet` or a union; what changes is how often it does. Code that
+casts the result to `FiniteSet`, or that reads an empty result as "no solutions", has to say which
+of the two it means:
+
+```csharp
+var answer = equation.Solve(x);
+if (answer is FiniteSet roots)      { /* these are all of them */ }
+else if (answer.IsSetEmpty)         { /* shown to have none */ }
+else                                { /* not settled, or not finite */ }
+```
+
+Nothing that solved before stops solving, and no equation that was shown to have no roots gains
+any. Solving `x2 - 4 = 0`, `sin(x) = 1/2`, `x2 + 1 = 0` and the system solver's answers are
+unchanged, as is `Solve` on an inequality.
+
+### A bound index is not a free variable
+
+`FreeVariables` knew about two binders — `Lambda` and the set builder — and about no others. A
+summation and a product bind their index, so `sum(k, k, 1, n)` is a function of `n` alone, and a
+definite integral binds its variable between its limits. Both reported the bound name as free.
+
+Measured on a build of 2.3.0 and a build of this branch:
+
+| input | 2.3.0 | now |
+|---|---|---|
+| `sum(k, k, 1, n)` | `{ k, n }` | `{ n }` |
+| `product(k, k, 1, n)` | `{ k, n }` | `{ n }` |
+| `integral(t * b, t, 0, 1)` | `{ b, t }` | `{ b }` |
+| `integral(t * b, t)` | `{ b, t }` | `{ b, t }` |
+| `derivative(t * b, t)` | `{ b, t }` | `{ b, t }` |
+| `lambda(x, x + y)` | `{ y }` | `{ y }` |
+| `{ k : k > a }` | `{ a }` | `{ a }` |
+
+The index is bound over the **bounds** as well as the body, which is what
+[`Binding`](Sources/AngouriMath/Core/Binding.cs) already says of itself: the name a binder is handed
+is honoured throughout it, through the summand and the bounds. So `sum(k, k, k, n)` is `{ n }` too.
+
+**The last three rows are unchanged on purpose, and the distinction is the interesting part.** An
+indefinite integral does not bind: the antiderivative of `t * b` over `t` is `b * t ^ 2 / 2 + C`,
+which is still a function of `t`. Neither does a derivative — `d/dt` denotes a function of `t`. They
+look like the same shape as a summation and are not, and a later sweep that completes the binder list
+by adding them would make them wrong. `FreeVariablesTest` pins all of it, including the two that must
+stay put.
+
+**`Vars` and `VarsAndConsts` do not change.** They mean every name *occurring*, bound ones included —
+`"sum(k, k, 1, n)".ToEntity().Vars` is still `{ k, n }` — which is what their own XML example has
+always documented, listing a lambda's parameter under *variables and constants*. Occurring and free
+are different questions and the three properties answer them separately.
+
+[#1019](https://github.com/asc-community/AngouriMath/issues/1019).
 
 ### A polynomial inequality of degree three or more is answered
 
@@ -156,6 +915,776 @@ bracketing for. The change only ever adds `\left(`/`\right)` groups, which CShar
 parses, so nothing downstream needs a matching change
 ([#822](https://github.com/asc-community/AngouriMath/issues/822)).
 
+### A limit binds the variable it approaches along
+
+`FreeVariables` learned about a summation, a product and a definite integral in
+[#1045](https://github.com/asc-community/AngouriMath/pull/1045), and about `limit` not at all —
+that commit names the indefinite integral and the derivative as deliberate exclusions and does
+not mention it.
+
+| | before | now |
+|---|---|---|
+| `"limit(t * b, t, 0)".ToEntity().FreeVariables` | `{ t, b }` | `{ b }` |
+| `"limit(t, t, b)".ToEntity().FreeVariables` | `{ t, b }` | `{ b }` |
+| `"limitleft(t * b, t, 0)".ToEntity().FreeVariables` | `{ t, b }` | `{ b }` |
+| `"limit(t, t, 0)".ToEntity().FreeVariables` | `{ t }` | `{ }` |
+
+The reason the indefinite integral and the derivative do not bind is exactly what makes a limit
+bind: an antiderivative of `t * b` over `t` is `b * t ^ 2 / 2 + C` and `d/dt` denotes a function
+of `t`, both still functions of the variable — while **a limit never is**. `lim(t, t, 0)` is `0`,
+and no limit's value depends on the name it approaches along. The destination is where the
+dependence goes, so it is bound over too: `lim(t, t, b)` is a function of `b` alone.
+
+`Vars` and `VarsAndConsts` are untouched, as they were in #1045 — they mean every name occurring
+([#989](https://github.com/asc-community/AngouriMath/issues/989)).
+
+### A leading coefficient that is a polynomial no longer stops the lift
+
+The Hensel lift below declined when the leading coefficient in the main variable was not a
+constant: the lifted factors' leading coefficients have to be known before the lift to keep them
+polynomials rather than power series. That is Wang's leading-coefficient problem, and it is
+avoided here rather than solved — `L^(n-1) f(z/L, y) = Σ a_i L^(n-1-i) z^i` is a polynomial,
+because `n - 1 - i` is never negative below the leading term, and it is **monic** in `z`, because
+the leading term contributes `L · L^(-1)`. A monic polynomial has a constant leading coefficient,
+which is the case the lift already handled. A factor comes back as `h(L·x, y)` with the content
+that substitution introduced divided out.
+
+| | before | now |
+|---|---|---|
+| `Factor("(y * x3 + 1) * (x4 - y3)", "x")` | `null` | `(x ^ 4 - y ^ 3) * (x ^ 3 * y + 1)` |
+| `Factor("(y * x + 1) * (x7 - y7)", "x")` | `null` | three factors |
+| `Factor("(y * x2 + 1) * (x6 - y6)", "x")` | `null` | five factors |
+| `Factor("(y2 * x3 + 1) * (x5 - y2)", "x")` | `null` | `null` — past the growth bound below |
+| `Factor("(y * x + 1) * (x + y)", "x")` | `(x * y + 1) * (x + y)` | unchanged — the substitution already reached it |
+
+That last-but-one row is a **bound rather than a limitation of the method**. The monic form
+carries `L^(n-1-i)`, so its degree in the auxiliary variable exceeds the original's by up to
+`(n-1)·deg L`. Measured: a growth of 6 costs 376 ms and a growth of 7 costs 1 ms, while a growth
+of 14 costs **63 seconds** — so growth past 12 is refused. A refusal is a legitimate answer and a
+sixty-three second one is not, which is the same judgement the recombination's own cap makes.
+
+### A factorisation multiplies back to what it factored
+
+`MathS.Polynomials.Factor` dropped a constant content when the polynomial had more than one
+variable, so the product it returned was **not equal to the polynomial it factored**.
+
+| | before | now |
+|---|---|---|
+| `Factor("4 * x2 - 4 * y2", "x")` | `(x + y) * (x - y)` | `4 * (x + y) * (x - y)` |
+| `Factor("2 * x2 - 2 * y2", "x")` | `(x + y) * (x - y)` | `2 * (x + y) * (x - y)` |
+| `Factor("6 * x4 - 6 * y4", "x")` | three factors, no `6` | `6 * (x + y) * (x ^ 2 + y ^ 2) * (x - y)` |
+| `Factor("3 * x * y + 3 * y", "x")` | `y * 3 * (x + 1)` | unchanged — the content is not a constant |
+| `Factor("2 * x2 - 2", "x")` | `2 * (x + 1) * (x - 1)` | unchanged — univariate |
+
+`KroneckerFactorization.Factor` documents its result as *"each of positive degree in the main
+variable"*, so a constant content is deliberately not among the factors it returns and the caller
+must reinstate it. `MathS.Polynomials.Kronecker` assembled the factors into a product and never
+did. Only "multivariate **and** the content is a pure number" landed in the gap; a content with a
+variable in it goes down a different path that reinstates it, and a univariate polynomial never
+reaches the substitution.
+
+The content is recovered by dividing the polynomial by the assembled product, which is what the
+rest of this layer does with a claim it could get wrong — a quotient that is missing or is not a
+constant means the product does not account for the polynomial, and then there is no answer to
+give. Everything here was already checked by exact division, but that check is on the individual
+*factors*; nothing compared the assembled product against the input
+([#1092](https://github.com/asc-community/AngouriMath/issues/1092)).
+### `Factorize` reaches inside a product the rules already made
+
+The change below asks the polynomial layer only where the rewrite rules said nothing, so that an
+answer the rules already gave is never replaced. Declining a **product** outright was too broad:
+the rules take a numeric content out and hand back `2 * (x ^ 3 - 1)`, and the remainder is exactly
+the shape that change is about.
+
+| | before | now |
+|---|---|---|
+| `"2 * x3 - 2".Factorize()` | `2 * (x ^ 3 - 1)` | `2 * (x - 1) * (x ^ 2 + x + 1)` |
+| `"3 * x6 - 3".Factorize()` | `3 * (x ^ 6 - 1)` | five factors |
+| `"5 * x7 - 5".Factorize()` | `5 * (x ^ 7 - 1)` | `5 * (x - 1) * (x ^ 6 + … + 1)` |
+| `"y * (x3 - 1)".Factorize()` | `y * (x ^ 3 - 1)` | `y * (x - 1) * (x ^ 2 + x + 1)` |
+| `"2 * x4 - 10 * x2 + 8".Factorize()` | `2 * (x + 1) * (x + 2) * (x - 2) * (x - 1)` | unchanged |
+| `"x * y + x".Factorize()` | `x * (1 + y)` | unchanged |
+
+Each factor of the product is asked separately instead of the product being handed over whole, so
+every factor the rules found survives and only the ones they could not split are split. Found by
+asking the property [#1092](https://github.com/asc-community/AngouriMath/issues/1092) is about —
+that the answer multiplies back to its input — of a row that satisfied it and was still less
+factored than it should be.
+### An equation between two powers of numeric bases is answered exactly
+
+`3 ^ (x+1) = 2 ^ (x-1)` has the exact root `-ln(6) / ln(3/2)`. The multiplicative solver reached it
+by dividing one exponent by the other; for two different integer bases that ratio is
+`ln(3)/ln(2)` — irrational — so `InnerSimplified` settled it to a decimal and everything after was
+numeric. The answer agreed with the exact one to seventeen significant figures and diverged, which
+is the signature of a `double` promoted to a decimal rather than a number that was computed.
+
+| | before | now |
+|---|---|---|
+| `"3^(x+1) - 2^(x-1)".SolveEquation("x")` | `{ ln(0.0467456982262863043886547131933184573426842689514160156250 ^ (1 / ln(2))) }` | `{ -(ln(3) + ln(2)) / (ln(3) + -ln(2)) }` |
+| `"3^(x+1) - 2^x".SolveEquation("x")` | a decimal | `{ -ln(3) / (ln(3) + -ln(2)) }` |
+| `"5^(2x) - 7^(x+3)".SolveEquation("x")` | `{ }` — **no answer at all** | `{ 3 * ln(7) / (2 * ln(5) + -ln(7)) }` |
+| `"3^x - 2^x".SolveEquation("x")` | `{ 0 }` | unchanged |
+| `"2^(2x) - 5·2^x + 4".SolveEquation("x")` | `{ 0, 2 }` | unchanged |
+
+Taking logarithms has no such step: `a ^ p = b ^ q` is `p ln a = q ln b` for positive real `a` and
+`b`, which the analytical solver answers exactly. Both bases must be **decidably positive reals**,
+which is what makes the step an equivalence rather than a branch choice; anything else declines and
+the multiplicative path still gets its turn, so this only ever adds answers
+([#1007](https://github.com/asc-community/AngouriMath/issues/1007)).
+### A widened codomain is written out, so `Stringize` round-trips it
+
+`Domain.Any` had no spelling: the second argument of `domain(...)` had to be one of the five
+special sets, and none of them means "no restriction". So a node **widened** to `Any` from a
+narrower default printed as though it had not been, and reading that back gave the default.
+
+| | before | now |
+|---|---|---|
+| `MathS.Abs("x").WithCodomain(Any).Stringize()` | `abs(x)` | `domain(abs(x), Any)` |
+| the same, reparsed | `Real` — the widening was lost | `Any` |
+| `MathS.Abs("x").WithCodomain(Integer).Stringize()` | `domain(abs(x), ZZ)` | unchanged |
+| `"Any + 1"` | parses, `Any` is a variable | unchanged |
+
+`Any` is **not** a set literal — there is still no node for "no restriction", and
+`SpecialSet.Create(Domain.Any)` still throws for it. It is read in the second argument of
+`domain(...)` and nowhere else, which commits to a spelling without deciding whether there is a
+universal *set*; that question is [#996](https://github.com/asc-community/AngouriMath/issues/996)
+and this does not answer it.
+
+Read rather than lexed, deliberately. A literal in a parser rule becomes a global lexer token, and
+making `Any` a keyword reserved the name everywhere — `Any + 1` stopped parsing. A test pins that
+it stays an ordinary variable.
+
+`Latexize` renders the subscript as `\mathrm{Any}` rather than a `\mathbb`, since there is no set
+to render ([#1048](https://github.com/asc-community/AngouriMath/issues/1048)).
+
+### An annotated rational literal keeps the annotation, `CC` included
+
+A codomain is a property of a node rather than a node of its own, so `domain(1/2, CC)` has to become
+one `Rational` carrying `Complex` — and it did not. The pass that reads a quotient of two integer
+literals as the rational it denotes ([#873](https://github.com/asc-community/AngouriMath/issues/873))
+ran over the **finished** tree, by which point `Complex` means two things at once: it is what an
+unannotated `Divf` carries by default, and it is what `domain(x, CC)` asks for. The pass read it as
+the first and dropped it.
+
+| | before | now |
+|---|---|---|
+| `"domain(1/2, CC)".ToEntity().Codomain` | `Rational` — the annotation gone | `Complex` |
+| `"domain(1/2, CC)".ToEntity() == "1/2".ToEntity()` | `true` | `false` |
+| `(1/2).WithCodomain(Complex).Stringize().ToEntity()` | `1/2`, `Rational` — printed one node, read back another | round-trips |
+| `"domain(1/2, RR)".ToEntity()` | `Real`, correct | unchanged |
+| `"1/2".ToEntity()` | a `Rational`, `Codomain = Rational` | unchanged |
+| `"domain(4/2, CC)".ToEntity()` | a `Divf`, `Codomain = Complex` | unchanged |
+| `"domain(1/2, CC)".ToEntity().Evaled` | `1/2` — the annotation erased by evaluating | `domain(1/2, CC)`, carried through |
+| the same, `.Simplify()` | `1/2` | `domain(1/2, CC)` |
+| the same, `.Latexize()` | `\frac{1}{2}` | `{\left(\frac{1}{2}\right)}_{\mathbb{C}}` |
+| `"domain(1/2, CC) + 1".ToEntity().Evaled` | `3/2` | unchanged |
+
+**The fix is where the fold happens, not what it reads.** `domain(...)`'s own parser rule now folds
+its argument before annotating it, so the two meanings of `Complex` never meet: an annotation lands
+on a node that is already the right shape, and the sweep over the rest of the tree — which is the
+only other place the fold runs — can hand back a bare `Rational` and read no codomain at all. It is
+sound to do so because those two are the only routes, `domain(...)` being the one syntax that
+annotates anything and the sweep meeting only what it did not annotate.
+
+`Complex` on a rational literal is a **widening** — a rational is a complex number — so nothing that
+was defined becomes `NaN` and no value changes: `domain(1/2, CC) + 1` evaluates to `3/2` as before,
+and `domain(1/2, ZZ)` is still `NaN`. What changes is equality, and everything that follows from the
+node genuinely carrying the annotation now — `Evaled` and `Simplify` hand it back instead of erasing
+it, and `Latexize` writes the subscript. That is the point: an annotation the caller wrote is no
+longer indistinguishable from one they did not.
+
+This was the second of the two gaps
+[#1048](https://github.com/asc-community/AngouriMath/issues/1048) recorded, and the last entry in
+`CodomainSurvivesPrintingTest.StillUnparseable`. That dictionary is now empty and still asserted in
+both directions, so every writable domain on every node type reads back as itself, and a gap added
+to it later fails the day it closes.
+
+### An interval bounded by its own element is decided, and `Common` terminates
+
+`a in (a / 2; 2 * a)` was `a > 0` and `a in (a / 3; 3 * a)` was left as written. The difference was
+not the mathematics — it was which candidate survived `Simplify`'s pruning.
+
+`ParaphraseInterval` writes a membership out as two comparisons with zero, and the difference it
+compares was left as a two-term sum: `a - a / 3` came back as `a + -a / 3`, which no rule about a
+sign can read. It is collected now, and the positive factor is divided out where the comparison is
+built rather than later — because `Simplify` prunes by `SimplifiedRate`, and
+`2/3 * a > 0 and 2 * a > 0` rates **26** against the membership's **25**, one point worse, so it was
+discarded before anything could take it to `a > 0`, which rates **8**. The `n = 2` case answered
+only because `1/2 * a > 0 and a > 0` happens to rate **24**.
+
+| | before | now |
+|---|---|---|
+| `"a in (a / 2; 2a)".Simplify()` | `a > 0` | unchanged |
+| `"a in (a / 3; 3a)".Simplify()` | `a in (a / 3; 3 * a)` | `a > 0` |
+| `"a in (a / 4; 4a)".Simplify()`, and every denominator through 8 | left as written | `a > 0` |
+| `"a in (a / 2; 3a)".Simplify()` | `a in (a / 2; 3 * a)` | `a > 0` |
+| `"a in (a / 7; 5a)".Simplify()` | left as written | `a > 0` |
+| `"a in (a / 2; 0)".Simplify()` | `a in (a / 2; 0)` | `False provided a in RR` |
+| `"a in (-2a; -a/2)".Simplify()` | left as written | `False provided a in RR` |
+| `"a in (a / 2; 2a + 1)".Simplify()` | `a > 0 and 1 + a > 0` | unchanged |
+| `"a in (1; 2)".Simplify()`, `"3 in (1; 5)"`, `"x in [0; 1]"`, `"a in (b; c)"` | unchanged | unchanged |
+
+The two `False` rows are answers where there were none: `a / 2 < a < 0` wants `a > 0` and `a < 0` at
+once, and so does `-2a < a < -a / 2`. The condition is there because the ordering is a claim about
+reals.
+
+**And `RewriteRules.Common` reaches a fixed point.** It was the library's only non-terminating rule
+set: a three-cycle on `-x * 1/2`, `Mulf(-1/2, x)` to `Mulf(-1, Divf(x, 2))` to `Divf(Mulf(-1, x), 2)`
+and back — three trees printing as two strings. Two of the three rules turning it are exact inverses
+on that shape: one reads `(-1 * x) / 2` as a numeric factor to collect, giving `-1/2 * x`, and the
+other reads that back as `-(x / 2)`. The first now declines a factor of `-1`, which is the sign
+rather than a number to collect.
+
+The positive case never cycled, and the reason says why the guard is where it is: `x / 2` is a
+quotient over a *leaf*, so it does not re-enter the collection rule's pattern at all. The loop
+existed only because a negation is spelled as a product.
+
+`Simplify` bounded its own iteration and never hung, so no caller saw the cycle — but a rule set is
+public, a caller may apply one by itself, and `Common` did not terminate when applied that way.
+`RuleSetTerminationTest.NeverSettle` is now empty and still asserted in both directions.
+
+**Nothing else moved.** `-x * 1/2` is `-1/2 * x` and `x * 1/2` is `x / 2`, both as before; the guard
+changes which rewrites are available, not which answer wins. The two halves of this entry ship
+together because the first is what makes the second free: the guard alone cost three interval shapes
+that were being answered by coincidence, and the collection restores them along with the rest of the
+family ([#1056](https://github.com/asc-community/AngouriMath/issues/1056)).
+
+### The determinant is computed by fraction-free elimination where it can be
+
+`Matrix.Determinant` expanded by Laplace, which is `O(n!)`. For a fully symbolic matrix that is
+optimal — the determinant genuinely has `n!` terms, and no algorithm returns it smaller in expanded
+form. For a numeric one it is pure waste: the answer is a single number and `O(n^3)` work suffices.
+
+Bareiss' fraction-free elimination now runs wherever the entries are polynomials over the rationals,
+and Laplace answers everything else. What decides it is not the size but whether the entries can be
+read, settled per matrix by trying.
+
+**The ceiling this removes**, both arms built from source on one machine:
+
+| | before | now |
+|---|---|---|
+| numeric 8×8 | 382 ms | under 1 ms |
+| numeric 10×10 | 14 415 ms | 2 ms |
+| numeric 11×11 | did not return in four minutes | 2 ms |
+| numeric 12×12 | did not return | 3 ms |
+| numeric 20×20 | did not return | 11 ms |
+| numeric 30×30 | did not return | 22 ms |
+
+**The printed form of a symbolic determinant changes**, because an elimination produces an expanded
+polynomial where Laplace produces a nested expansion. The value is the same and the expression is no
+larger in any case measured:
+
+| | before | now |
+|---|---|---|
+| `"[[a, b], [c, d]]"` | `a * d + -b * c` | `a * d - b * c` |
+| `"[[x, 1, 0], [1, x, 1], [0, 1, x]]"` | `x * (x ^ 2 + -1) + -x` | `x ^ 3 - 2 * x` |
+| `"[[a, b, 1], [c, d, 2], [1, 2, 3]]"` | `a * (d * 3 + -4) + -b * (c * 3 + -2) + c * 2 + -d` | `3 * a * d - 4 * a - 3 * b * c + 2 * b + 2 * c - d` |
+| `"[[x, 1], [1, x]]"` | `x ^ 2 + -1` | unchanged |
+| `"[[1/2, 1/3], [1/4, 1/5]]"` | `1/60` | unchanged |
+
+**No condition is introduced, and that is the point.** An ordinary Gaussian elimination leaves its
+pivots as literal divisions, so its answer is undefined wherever a pivot vanishes — at points where
+the determinant is perfectly well defined. That was
+[#992](https://github.com/asc-community/AngouriMath/issues/992), and it is why Laplace was chosen.
+Bareiss divides as well, but each division is by the *previous* pivot and is exact: the quotient is a
+determinant of a minor, so it is back in the ring. Here it is exact **and checked** — the arithmetic
+happens in `MultivariatePolynomial`, which has no quotients to leave behind, and a division that does
+not come out returns null and sends the caller to Laplace.
+
+**What is declined**, and answered by Laplace exactly as before: an entry that is not a polynomial
+over the rationals (`sin(x)`, `1 / x`, `2 ^ x`), a matrix in more than eight indeterminates, and a
+matrix mentioning `e` or `pi` — a constant is a value rather than an indeterminate, and this ring
+cannot hold one.
+
+The two algorithms were compared on 300 generated matrices where both apply, as a difference
+simplified to zero rather than as trees, with **no disagreements**
+([#999](https://github.com/asc-community/AngouriMath/issues/999)).
+### Solving a system is bounded whichever internal path takes it
+
+`Solve` on a system tries a triangularising path first, which bounds itself, and hands what it
+declines to an elimination in radicals, which had **no budget at all**. So the same call was bounded
+or unbounded depending on which internal path accepted it — cyclic-6 exceeded twenty seconds with
+nothing to stop it — and that is worse to debug than either extreme.
+
+The whole call now draws on one budget. Where it runs out, `NotSufficientlySupportedException` is
+raised, naming both paths and both ways to ask for more.
+
+| | before | now |
+|---|---|---|
+| `solvesys[a,b,c,d,f,g]` cyclic-6 | exceeded 20 s, no bound beyond it | declines, returning in about two minutes |
+| `solvesys[a,b,c,d,e]` of `a^4-1 … e^4-1` | 1024 solutions | unchanged |
+| `solvesys[a,b,c,d]` cyclic-4 | 158 solutions | unchanged |
+| `x + y = 3, x - y = 1` and every system that answered | unchanged | unchanged |
+| the same with `MathS.Settings.Budget` set below what the solve needs | answered anyway | raises |
+
+**Nothing that answered stops answering.** That was the risk, and it was measured before the change
+rather than argued about: the 1024-solution system is one the triangularising path declines on its
+quotient-dimension cap, and it declines it **in 8 milliseconds** — so bounding the whole call leaves
+the elimination essentially the whole budget. "The fast path declined" does not mean "hopeless", and
+this is what keeps that true.
+
+**The default is two ceilings, and both are measured.** A step is one candidate solution the
+elimination explores, which is what compounds — each elimination turns the next level's coefficients
+into nested radicals. The systems that answer explore very few: a symbolic 2×2 takes 2, cyclic-4
+takes 8, and the largest that answers at all takes 341. Cyclic-5 passes 100 000 without finishing. So
+the step ceiling is 10 000, with thirty-fold headroom over anything known to work.
+
+The clock is a backstop rather than the bound, and it is deliberately loose at sixty seconds, because
+a step can be arbitrarily expensive — cyclic-4 spends five seconds in eight of them. A tight clock
+was tried at five seconds and makes the same system answer or decline depending on what else the
+machine is doing, which is a worse failure than a slow answer.
+
+**The bound is cooperative and is checked once per branch**, so a call can overshoot by the cost of
+the branch that was running when the budget ran out. That is `BudgetLedger`'s stated design: an
+algorithm that does not ask cannot be bounded, and a bound enforced from outside is a thread abort in
+the middle of a rewrite. It is a bound where there was none, not a tight one.
+
+**A budget recording now sees two outcomes per solve** rather than one, named `Gröbner` and
+`SolveSystem`. What stopped each is reported separately, which is the thing
+[#896](https://github.com/asc-community/AngouriMath/issues/896) said a caller could not previously
+find out.
+
+### A fold over an empty sequence answers instead of throwing
+
+A fold over a monoid has an identity, so the empty sum is `0` and the empty product is `1` — which
+is what makes `xs.Concat(ys).SumAll() == xs.SumAll() + ys.SumAll()` hold for every pair, the empty
+one included. These threw instead, and threw the wrong *kind* of exception: `AngouriBugException`
+ends its message asking the caller to report a bug against this repository, for a list their own
+`Where` happened to filter to nothing.
+
+| | before | now |
+|---|---|---|
+| `new Entity[0].SumAll()` | `AngouriBugException` | `0` |
+| `new Entity[0].MultiplyAll()` | `AngouriBugException` | `1` |
+| `Sumf.Sum(new Entity[0])` | `AngouriBugException` | `0` |
+| `Mulf.Multiply(new Entity[0])` | `AngouriBugException` | `1` |
+| `MathS.Vector()` | `IndexOutOfRangeException` | `InvalidMatrixOperationException` |
+| `new Entity[0].ToVector()` | `IndexOutOfRangeException` | `InvalidMatrixOperationException` |
+
+`IndexOutOfRangeException` is not under `AngouriMathBaseException`, so a caller catching the
+hierarchy `Docs/Usage/Exceptions.md` documents did not catch it at all.
+
+`Sumf.Sum` and `Mulf.Multiply` are not named in the issue. The defect is *passing an unchecked
+caller collection into `MultiHangBinary`*, whose `>= 1` precondition is genuine, and those two are
+public and do exactly that. `MultiHangBinary` itself is unchanged
+([#1028](https://github.com/asc-community/AngouriMath/issues/1028)).
+
+### `Factorize` uses the polynomial layer where no rule reaches
+
+`Entity.Factorize` was composed entirely out of `RewriteRules`, so it factored what someone had
+written a rule for and handed everything else back whole — while square-free decomposition,
+Zassenhaus over `Q`, Kronecker's substitution and Hensel lifting all sat in the tree unused by it.
+
+| | before | now |
+|---|---|---|
+| `"x3 - 1".Factorize()` | `x ^ 3 - 1` | `(x - 1) * (x ^ 2 + x + 1)` |
+| `"x4 - 5x2 + 4".Factorize()` | `x ^ 4 - 5 * x ^ 2 + 4` | `(x + 1) * (x + 2) * (x - 2) * (x - 1)` |
+| `"x6 - 1".Factorize()` | `x ^ 6 - 1` | `(x + 1) * (x - 1) * (x ^ 2 + x + 1) * (x ^ 2 - x + 1)` |
+| `"x7 - 1".Factorize()` | `x ^ 7 - 1` | `(x - 1) * (x ^ 6 + x ^ 5 + x ^ 4 + x ^ 3 + x ^ 2 + x + 1)` |
+| `"x2 + 2x + 1".Factorize()` | `x ^ 2 + 2 * x + 1` | `(x + 1) ^ 2` |
+| `"a2 - b2".Factorize()` | `(a - b) * (a + b)` | unchanged |
+| `"x4 - y4".Factorize()` | `(x - y) * (x + y) * (x ^ 2 + y ^ 2)` | unchanged |
+| `"x * y + x".Factorize()` | `x * (1 + y)` | unchanged |
+| `"sin(x) + 1".Factorize()` | `sin(x) + 1` | unchanged |
+
+**The layer speaks only where the rules said nothing.** An expression the rules already turned
+into a product keeps their answer exactly — the order two factors come out in is arbitrary and
+theirs is the one on record, so replacing it would change answers that were never the complaint.
+What moves is only what came back whole.
+
+**`Simplify` is unchanged**, and that took a second seam. It offers a factorisation as a
+*candidate* and its cost model decides; the metric prefers the expanded form, so a factored
+candidate wins only where the two are closest — and those are the places a factored answer is
+least wanted (`x ^ 3 / 3 + x ^ 2 / 2` became `(3 + 2 * x) * x ^ 2 / 6`, an antiderivative in a
+form nobody writes). `Transformation.RuleBasedFactorizationAtLevel` is what that candidate site
+uses now. Offering the layer to that search is
+[#746](https://github.com/asc-community/AngouriMath/issues/746) tier 2's pluggable cost model
+rather than this ([#1018](https://github.com/asc-community/AngouriMath/issues/1018)).
+
+### A polynomial in two variables is factored by lifting rather than by substituting
+
+`MathS.Polynomials.Factor` in several variables was Kronecker's substitution alone, and its
+one-variable image **over-factors**: `x7 - y7` maps to `t^7 (1 - t^49)`, whose factors are
+cyclotomic, so a two-factor bivariate becomes a one-variable polynomial with many irreducibles
+and the recombination is exponential in a count the substitution inflated itself. Those were
+refusals.
+
+An *evaluation* image inflates nothing — `x7 - y7` at `y = 1` is `x7 - 1`, which has the two
+factors the answer has — and the factorisation of that image is lifted back one power of `y` at
+a time.
+
+| | before | now |
+|---|---|---|
+| `Factor("x7 - y7", "x")` | `null` | `(x - y) * (x ^ 6 + x ^ 5 * y + x ^ 4 * y ^ 2 + x ^ 3 * y ^ 3 + x ^ 2 * y ^ 4 + x * y ^ 5 + y ^ 6)` |
+| `Factor("x6 - y6", "x")` | `null` | `(x + y) * (x - y) * (x ^ 2 + x * y + y ^ 2) * (x ^ 2 - x * y + y ^ 2)` |
+| `Factor("x12 - y12", "x")` | `null` | six factors, the full cyclotomic split |
+| `Factor("x4 - y10", "x")` | `null` | `(x ^ 2 + y ^ 5) * (x ^ 2 - y ^ 5)` |
+| `Factor("x16 + 4 x8 y + 3 y2", "x")` | `null` | `(x ^ 8 + 3 * y) * (x ^ 8 + y)` |
+| `Factor("x ^ 3 - (y + z) ^ 3", "x")` | `null` | `null` — three variables, and the lift goes along one |
+| `Factor("(x + y) * (x - y)", "x")` | `(x + y) * (x - y)` | unchanged |
+
+**What it will not do.** The leading coefficient in the main variable has to be a constant.
+Where it is a polynomial in `y`, the lifted factors' leading coefficients must be known before
+the lift to keep them polynomials rather than power series — Wang's leading-coefficient problem
+— and that is a second algorithm on top of this one. It declines, and the substitution is still
+tried first. Three or more variables decline for the same reason: the lift goes along one
+evaluation at a time.
+
+**Nothing is trusted.** Every candidate is checked by exact division of the original, so a bad
+evaluation point, a lift that drifted, or a recombination that is not a factor costs a refusal
+and cannot cost a wrong answer.
+
+This is [#746](https://github.com/asc-community/AngouriMath/issues/746) tier 1's Hensel lifting
+item, in two variables.
+
+### A polynomial in too many variables to substitute can still be answered
+
+`MathS.Polynomials.Factor` in more than one variable works by Kronecker's substitution, whose
+one-variable image has degree `Π (d_i + 1) - 1` — a *product*. That leaves the one-variable
+factoriser's reach after very few variables, and the answer was a refusal:
+
+| | before | now |
+|---|---|---|
+| `Factor("x2 + y2 + z2 + w2 + 1", "x")` | `null` | `w ^ 2 + x ^ 2 + y ^ 2 + z ^ 2 + 1` |
+| `Factor("x2 + y2 + z2 + 1", "x")` | `x ^ 2 + y ^ 2 + z ^ 2 + 1` | unchanged |
+| `Factor("x7 - y7", "x")` | `null` | `null` — it *is* reducible, and this says nothing about it |
+| `Factor("(x + y) * (x - y)", "x")` | `(x + y) * (x - y)` | unchanged |
+| `Factor("y * (x + 1)", "x")` | `y * (x + 1)` | unchanged |
+
+Where the substitution gives up, the polynomial is now evaluated at an integer point in every
+variable but the main one and the one-variable image is factored. **An image that is irreducible
+and has kept its degree is a proof that its source is irreducible** — substitution is a ring
+homomorphism, so a factorisation would survive it, and degrees in the main variable add, so
+neither part can have lost any while the total is preserved. An evaluation image has the degree
+of the polynomial in the main variable however many other variables there are, so this reaches
+where the substitution cannot.
+
+It answers in one direction only. A reducible image says nothing, so `x7 - y7` is still refused;
+a factor free of the main variable is invisible to it, so the content is checked and anything but
+a constant declines. Since
+[#1059](https://github.com/asc-community/AngouriMath/pull/1059) "it does not factor" is an
+answer rather than a refusal, which is what makes this worth having
+([#746](https://github.com/asc-community/AngouriMath/issues/746) tier 1).
+
+### `x! = 0` carries the condition under which the factorial exists
+
+A factorial is never zero **where it is defined**, and at a negative integer it is not defined.
+`"x! = 0".ToEntity().Simplify()` was `False` for every `x`, so at `x = -1` it answered a question
+the original declines: `(-1)! = 0` evaluates to `NaN`.
+
+| | before | now |
+|---|---|---|
+| `"x! = 0".ToEntity().Simplify()` | `False` | `False provided x in RR and (x >= 0 or not x in ZZ)` |
+| the same, at `x = 3` | `False` | `False` |
+| the same, at `x = -1` | `False` | `NaN` |
+| `RewriteRules.InequalityEquality.ApplyOnce("x! = 0")` | `False` | `False provided x in RR and (x >= 0 or not x in ZZ)` |
+
+The rule read `Factorialf({ DomainCondition: var condition })`, which is a property pattern on the
+factorial's **argument** rather than on the factorial. For a bare variable that condition is `True`,
+and `Provided` drops a `True`, so the answer went out unconditioned. One character of pattern syntax
+between the two, and the wrong one reads as though it were about the factorial.
+
+Where the factorial exists the answer is still `False`, so the condition narrows the rule rather
+than withdrawing it. A factorial **over itself** moves with it: `a / a = 1 provided a != 0`
+produced `1 provided not x! = 0`, whose condition used to discharge itself because `x! = 0` was
+`False`, and now survives. `"x! / x!".ToEntity().Simplify()` was `1` at every point including the
+poles; it now agrees with the original at `x = 3`, `0`, `-1` and `-2`, where `1` disagreed at both
+negative integers. Found by transcribing the set into `MatchedRules` for
+[#746](https://github.com/asc-community/AngouriMath/issues/746) tier 1, as the single disagreement
+out of 3,485 generated expressions
+([#1081](https://github.com/asc-community/AngouriMath/issues/1081)).
+
+### Four `or`-with-equality rules gave the opposite comparison
+
+`a < b or a = b` is `a <= b`. Written with the comparison the other way round it answers the other
+way round: `b < a or a = b` is `a >= b`. Four of the eight arms of `InequalityEqualityRules` that
+say this carried their neighbour's answer, so the result was the negation of the input everywhere
+off the diagonal.
+
+| | before | now |
+|---|---|---|
+| `RewriteRules.InequalityEquality.ApplyOnce("(y < x) or (x = y)")` | `x <= y` | `x >= y` |
+| `RewriteRules.InequalityEquality.ApplyOnce("(y > x) or (x = y)")` | `x >= y` | `x <= y` |
+| `RewriteRules.InequalityEquality.ApplyOnce("(x = y) or (y < x)")` | `x <= y` | `x >= y` |
+| `RewriteRules.InequalityEquality.ApplyOnce("(x = y) or (y > x)")` | `x >= y` | `x <= y` |
+| `RewriteRules.InequalityEquality.ApplyOnce("(x < y) or (x = y)")` | `x <= y` | `x <= y` — this half was right |
+| `RewriteRules.InequalityEquality.ApplyOnce("(x > y) or (x = y)")` | `x >= y` | `x >= y` — and so was this |
+
+`Simplify` moves with it: `"(y < x) or (x = y)".ToEntity().Simplify()` was `x <= y` and is `x >= y`.
+At `x = 3, y = 2` the input is True and the old answer is False.
+
+**Only reachable with both operands symbolic**, which is why it survived. With a number on one side,
+the `Lessf(var @const, ...)` arm further down the same set rewrites `2 < x` to `x > 2` earlier in the
+pass, so the disjunction is only ever looked at with both halves written the same way round and one
+of the four *correct* arms matches — `"(2 < x) or (x = 2)".ToEntity().Simplify()` was and is `x >= 2`.
+
+Found by transcribing the set into `MatchedRules` for
+[#746](https://github.com/asc-community/AngouriMath/issues/746) tier 1: writing a rule out as data
+makes the correspondence between its pattern and its replacement something you have to state, and
+four of these did not survive stating it
+([#1077](https://github.com/asc-community/AngouriMath/issues/1077)).
+
+### A reciprocal inside a logarithm is no longer moved out unconditionally
+
+`ln(1/b) = -ln(b)` is false on the negative reals, because the principal argument does not negate
+with its logarithm. At `b = -0.63`, `ln(1/b)` is `0.462 + πi` and `-ln(b)` is `0.462 − πi`.
+
+Three arms of `PowerRules` applied it for every `b`, and they now carry the guard their neighbours
+ten lines below already had — `ln(1/b)` is `ln(1) − ln(b)`, so a reciprocal is the *difference* case
+of the logarithm gathering and the same helper answers it. Both ways of earning the rewrite carry
+over: the argument is decidably a positive real, or the limit machinery is reading towards a
+destination and has established the sign on the way.
+
+| | before | now |
+|---|---|---|
+| `RewriteRules.Power.ApplyOnce("ln(1 / x)")` | `-ln(x)` | `ln(1 / x)` |
+| `RewriteRules.Power.ApplyOnce("log(2, 1 / x)")` | `-log(2, x)` | `log(2, 1 / x)` |
+| `RewriteRules.Power.ApplyOnce("log(1 / x, 1 / y)")` | `log(x, y)` | `log(1 / x, 1 / y)` |
+| `RewriteRules.Power.ApplyOnce("ln(1 / 2.5)")` | `-ln(5/2)` | `-ln(5/2)` — the argument is positive |
+
+**`Simplify` is unchanged**, and that is why this went unnoticed: `"ln(1 / x)".Simplify()` was
+`ln(1 / x)` before and after, because the candidate search never picked that branch. So no answer
+from the public simplifier moves. What moves is `RewriteRules.Power` applied on its own, which is
+what [#746](https://github.com/asc-community/AngouriMath/issues/746) tier 2 makes a caller able to
+do ([#1062](https://github.com/asc-community/AngouriMath/issues/1062)).
+
+### `RewriteRuleGrowth` gained a fourth value, `Unknown`
+
+A rule written as **data** builds its answer in code rather than spelling it out, so there is nothing
+to count and no growth to report. The three existing values all make a claim; reporting such a rule
+as `Rearranges` — the middle one, and the one that reads as harmless — would be a claim about a
+rewrite nobody measured.
+
+**Additive**, so nothing that exists changes value. What it means for a caller is that a `switch`
+over `RewriteRuleGrowth` is no longer exhaustive, and code with no default arm will not compile
+against the new assembly until it handles the fourth case.
+
+It appears wherever a rule's replacement is code, which today is `RationalizeDenominator` and the
+one-way rules of the sets already expressed as data.
+### `RewriteRules.Boolean` absorbs in three orientations it used to miss
+
+Absorption is written eight times in `Patterns.BooleanRules`, once for each way the shared operand
+can sit inside two commutative pairs — and three of the ways were never written. Expressed as data
+the law is **one commutative rule**, which covers all of them.
+
+| | before | now |
+|---|---|---|
+| `RewriteRules.Boolean.ApplyOnce("a and b or a")` | `a and b or a` | `a` |
+| `RewriteRules.Boolean.ApplyOnce("(a or b) and a")` | `(a or b) and a` | `a` |
+| `RewriteRules.Boolean.ApplyOnce("a or b and not a")` | `a or b and not a` | `a or b` |
+
+Each is a correct absorption: `(a ∧ b) ∨ a` is `a`, and `a ∨ (b ∧ ¬a)` is `a ∨ b`.
+
+**`Simplify` is unchanged** — it reached all three already, because the canonical order puts the
+operands into a fixed arrangement before the rules run, so the orientations the arms missed were
+never the ones it was handed. What moves is `RewriteRules.Boolean` applied on its own.
+
+The same file already carried a comment about this class of gap, on the excluded-middle rule:
+*"The same law with the operands the other way round. `or` is commutative, so leaving this out made
+the answer depend on which side the negation was written."* It was fixed there for one rule and left
+for the rest.
+
+### `Factor` factors a polynomial in more than one variable
+
+After the content is taken out, what remains may still have polynomial coefficients — and it can be
+factored anyway, by **Kronecker's substitution written in mixed radix**. A factor of a polynomial
+has degree at most `d_i` in each variable `v_i`, because a factor divides it. So with radices
+`d_i + 1` and place values `s_0 = 1`, `s_(i+1) = s_i * (d_i + 1)`, the map sending a monomial to
+`t^(Σ e_i · s_i)` writes each exponent as one digit of a numeral, and is therefore injective on
+every monomial that can appear in the polynomial or in any of its factors. The one-variable image
+is factored by the existing factoriser, and each subset of its irreducible factors names a
+candidate.
+
+| | 2.3.0 | now |
+|---|---|---|
+| `Factor("x ^ 2 - y ^ 2", "x")` | `null` | `(x + y) * (x - y)` |
+| `Factor("x ^ 2 + 2 * x * y + y ^ 2", "x")` | `null` | `(x + y) ^ 2` |
+| `Factor("x ^ 3 - y ^ 3", "x")` | `null` | `(x - y) * (x ^ 2 + x * y + y ^ 2)` |
+| `Factor("x ^ 4 - y ^ 4", "x")` | `null` | `(x + y) * (x ^ 2 + y ^ 2) * (x - y)` |
+| `Factor("x ^ 2 * y ^ 2 - 1", "x")` | `null` | `(x * y + 1) * (x * y - 1)` |
+| `Factor("x ^ 2 - y ^ 2 + 2 * x + 1", "x")` | `null` | `(x + y + 1) * (x - y + 1)` |
+| `Factor("x ^ 2 - (y + z) ^ 2", "x")` | `null` | `(x + y + z) * (x - y - z)` |
+| `Factor("x ^ 2 + 2 * x * y + y ^ 2 - z ^ 2", "x")` | `null` | `(x + y + z) * (x + y - z)` |
+| `Factor("(x + y) * (x + z) * (x + w)", "x")` | `null` | `(x + y) * (w + x) * (x + z)` |
+| `Factor("x * y + y * z", "x")` | `null` | `y * (x + z)` |
+| `Factor("a * x + a * y + a * z", "x")` | `null` | `a * (x + y + z)` |
+| `Factor("x ^ 2 * y - y ^ 3", "x")` | `null` | `y * (x + y) * (x - y)` |
+| `Factor("x ^ 2 + y ^ 2", "x")` | `null` | `x ^ 2 + y ^ 2` — irreducible over ℚ |
+| `Factor("x * y + z", "x")` | `null` | `x * y + z` — irreducible over ℚ |
+| `Factor("x ^ 2 - a", "x")` | `null` | `x ^ 2 - a` — irreducible over ℚ |
+| `Factor("x + y", "x")` | `null` | `x + y` — irreducible over ℚ |
+
+**"It does not factor" is an answer, and the input is how it is said.** The substitution does not
+merely fail to find a factorisation; it *proves* there is none. A splitting of the polynomial into
+two parts of positive degree in the main variable maps to a splitting of the one-variable image,
+because the substitution is a ring homomorphism on these monomials — and every splitting of the
+image is one of the subsets the recombination tries. So where nothing recombines, nothing exists.
+
+Reporting that proof as `null` threw away the content along with it: `x * y + y * z` was refused,
+although `y` had already been taken out and `y * (x + z)` is a factorisation. It also disagreed with
+the one-variable path, where `Factor("x ^ 2 + 1", "x")` has always been `x ^ 2 + 1`.
+
+The proof has one precondition and it is now checked. A trial division answers `null` both for "does
+not divide" and for "ran out of room", and only the first is evidence — so where a division was cut
+short by a term or degree budget, the irreducibility claim is withheld and the answer stays a
+refusal.
+
+**It cannot answer wrongly.** The substitution is injective on monomials but not on factorisations,
+so the image may factor further than the polynomial does and a candidate is a guess. Every one is
+tested by exact division before it is kept, and the assembled factors are divided back into the
+input, so the failure mode is a refusal.
+
+**What it refuses.** The image has degree `Π (d_i + 1) - 1`, a **product** and not a sum, and the
+one-variable factoriser stops at 32 — so the ceiling closes quickly as variables are added. Two
+variables reach bidegrees like (2, 10), (3, 7) and (5, 4); three variables of degree 2 fit (27) and
+four do not (81). `Factor("x ^ 12 - y ^ 12", "x")` and
+`Factor("(x + y + z + w) * (x - y)", "x")` are both `null` for this reason, though both factor
+mathematically. The recombination is over subsets, so the image's factor count is capped too.
+Lifting that ceiling is Hensel lifting with an evaluation homomorphism, which is a different piece
+of work.
+
+`MathS.Polynomials.Factor` has no caller inside the library, so no simplification, solution or
+integral changes with it.
+
+### The square-free part is taken where the coefficients are polynomials
+
+`MathS.Polynomials.SquareFreePart` refused every polynomial in more than one variable, for the same
+reason `Factor` did: it was written against a representation with rational coefficients.
+
+`p / gcd(p, dp/dx)` is the square-free part whatever ring the coefficients live in — a repeated
+factor appears in the derivative one time fewer than in the polynomial, so dividing by the common
+part leaves each distinct factor exactly once. The multivariate representation has all three
+operations already: `DerivativeIn`, the recursive greatest common divisor that
+`MathS.Polynomials.Gcd` is built from, and exact division.
+
+| | 2.3.0 | now |
+|---|---|---|
+| `SquareFreePart("(x - y) ^ 2 * (x + y)", "x")` | `null` | `x ^ 2 - y ^ 2` |
+| `SquareFreePart("(x - y) ^ 3", "x")` | `null` | `x - y` |
+| `SquareFreePart("(x + a) ^ 2 * (x + b)", "x")` | `null` | `a * b + a * x + b * x + x ^ 2` |
+| `SquareFreePart("x ^ 2 * y ^ 2", "x")` | `null` | `x` |
+| `SquareFreePart("y", "x")` | `null` | `null` |
+
+**The content is dropped, as it always was.** `SquareFreePart("4 * x ^ 2", "x")` is `x` rather than
+`4 * x`, because the univariate path takes the primitive part first. `x ^ 2 * y ^ 2` is `x` for
+exactly that reason, with `y ^ 2` as the content — the existing convention applied to a wider ring,
+not a new one.
+
+Reached only where the rational path declined, so nothing that already answered can change.
+
+### `Factor` takes out the content instead of refusing
+
+`MathS.Polynomials.Factor` works over ℚ, so a coefficient that is not a rational number stopped it
+before it began and **every polynomial in more than one variable was refused**. Some of them never
+needed a bigger ring: `x * y + y` is `y` times something univariate, and only the `y` was in the way.
+
+The content in the named variable — the greatest common divisor of the coefficients, a polynomial in
+the other variables — is now taken out first, using the same multivariate machinery
+`MathS.Polynomials.Gcd` is already built from, and what remains goes down the ordinary path.
+
+| | 2.3.0 | now |
+|---|---|---|
+| `Factor("x * y + y", "x")` | `null` | `y * (x + 1)` |
+| `Factor("x ^ 2 * y + x * y", "x")` | `null` | `y * x * (x + 1)` |
+| `Factor("a * x ^ 2 + a * x", "x")` | `null` | `a * x * (x + 1)` |
+| `Factor("x ^ 2 * y ^ 2 - y ^ 2", "x")` | `null` | `y ^ 2 * (x + 1) * (x - 1)` |
+
+**Only a refusal becomes an answer.** Nothing that already factorised changes, because this path
+runs only where the old one returned `null`.
+
+Taking the content out does nothing where the content is a constant, so `x ^ 2 - y ^ 2` is not
+answered by this change — it needs factorisation over ℚ(y). That is what Kronecker's substitution
+does, in the entry above, and the two paths are tried in that order.
+
+The test that pinned the refusal carried a comment saying that handing `x * y + y` back *"would say
+that `y * (x + 1)` does not exist, which is a wrong answer and not a graceful failure"*. It now
+asserts that answer, checked numerically at twenty random points per case rather than as a string —
+`Simplify` does not prove `y * x * (x + 1)` equal to `x ^ 2 * y + x * y`, and the two are equal.
+
+### A narrowed `Codomain` is printed, so it survives being read back
+
+`Codomain` decides evaluation — `sqrt(-1)` is `i`, and the same expression with `Codomain = Real`
+is `NaN`, which is the example on `Entity.Codomain` itself. No node printed it, so the two printed
+the same string and the annotation was lost the moment an expression was written out: to a file, to
+a database column, through `EntityJsonConverter`, or to another process.
+[#1022](https://github.com/asc-community/AngouriMath/issues/1022).
+
+The parser already had the syntax. `domain(expr, SET)` maps onto `WithCodomain` and works for every
+node, not only a variable, so only the printing half was missing. Measured on a build of 2.3.0 and a
+build of this branch:
+
+| expression | 2.3.0 printed | 2.3.0 read that back as | now prints |
+|---|---|---|---|
+| `"domain(x, ZZ)".ToEntity()` | `x` | a `Variable` with `Codomain = Any` | `domain(x, ZZ)` |
+| `"domain(x + 1, RR)".ToEntity()` | `x + 1` | a `Sumf` with `Codomain = Complex` | `domain(x + 1, RR)` |
+| `"domain(sqrt(-1), RR)".ToEntity()` | `sqrt(-1)` | a `Powf` that evaluates to `i` | `domain(sqrt(-1), RR)` |
+| `"domain([1, 2], RR)".ToEntity()` | `[1, 2]` | a `Matrix` with `Codomain = Any` | `domain([1, 2], RR)` |
+| `Sin(Var("x").WithCodomain(Integer)) + Var("y").WithCodomain(Real)` | `sin(x) + y` | both annotations gone | `sin(domain(x, ZZ)) + domain(y, RR)` |
+
+`EntityJsonConverter` serialises what `Stringize` prints, so it changes with it and needed no code:
+`JsonSerializer.Serialize("domain(x, ZZ)".ToEntity())` was `"x"` and is `"domain(x, ZZ)"`.
+
+**A sum stops collecting two terms that are not the same term.** `Simplify`'s polynomial
+collection keys a monomial by its base's *printed form*, so while the printed form did not
+distinguish `x` from `x` narrowed to the integers, it added them up as one:
+
+```
+"x - domain(x, ZZ)".ToEntity().Simplify()      2.3.0: 0                    now: x - domain(x, ZZ)
+"domain(x, ZZ) + x".ToEntity().Simplify()      2.3.0: 2 * x                now: domain(x, ZZ) + x
+```
+
+`0` is the answer only where `x` is an integer, and the annotation is what says it might not be, so
+this was a wrong answer rather than a tidier one. Confirmed as the cause by putting the collision
+back — keying on the base with its codomain erased brings `0` and `2 * x` straight back.
+
+**The ordinary expression is untouched.** The wrapper is printed only where the codomain is *not*
+the one that parsing the bare text would give back, and nothing inside the library narrows a
+codomain — `WithCodomain` is called from the parser and from callers, and from nowhere else. So
+`"x + 1".ToEntity().Stringize()` is `x + 1` on both versions, and of the 8,084 tests in the suite
+the only two that moved are the one written to pin this defect and the recorded public surface.
+
+That default is **not the same for every node**, which is why the rule is a comparison and not a
+check against `Complex`: a `Variable` and a `Matrix` default to `Any`, `Absf`, `Modf`, `Minf`,
+`Maxf` and `Interval` to `Real`, every boolean node to `Boolean`, each numeric literal to its own
+type's domain, `Phif` to `Integer`, the set nodes and `Providedf`, `Piecewise`, `Application` and
+`Lambda` to `Any`, and the rest to `Complex`. Each node now declares that default next to its
+`Codomain`, and a test asserts that every freshly built node of every node type carries it.
+
+**LaTeX** renders it as a subscripted set, `{\left(x\right)}_{\mathbb{Z}}`. The parentheses are
+unconditional because a variable renders its own index as a subscript, so `x_{\mathbb{Z}}` would be
+indistinguishable from a variable spelled that way. This is new output for
+[CSharpMath.Evaluation](https://github.com/verybadcat/CSharpMath/blob/master/CSharpMath.Evaluation/Evaluation.cs),
+which reads our LaTeX back and has no notion of a codomain; it appears only for an expression that
+carries a narrowed one ([#822](https://github.com/asc-community/AngouriMath/issues/822)).
+
+**Two annotations still do not survive, and both are the grammar's limit.** `Any` cannot be written
+at all — the second argument of `domain(...)` has to be one of the five special sets, and none of
+them means "no restriction" — so a node *widened* to `Any` from a narrower default still prints as
+though it had not been. And no input string yields a rational literal whose codomain is `Complex`,
+because the pass that reads `1/2` as a `Rational` rather than a quotient
+([#873](https://github.com/asc-community/AngouriMath/issues/873)) uses `Complex` as its "nobody
+annotated this" sentinel. Both are pinned by tests that fail if they start working, so neither can
+outlive itself.
+
+**The public surface.** Each node type used to declare its own `public override string Stringize()`
+and `Latexize()`; the codomain wrapper is one decision and now lives once on `Entity`, with the
+per-node rendering behind an internal member. All 130 overrides are therefore gone from
+`PublicApi.txt`. Nothing a caller can write stops compiling — `someSumf.Stringize()` still resolves,
+inherited from `Entity` — and nothing already compiled stops running either.
+
+That second half was measured rather than assumed, because it is the kind of claim that reads
+plausibly in both directions. A consumer calling `((Entity.Sumf)e).Stringize()` was compiled against
+a build of 2.3.0, then run unchanged against a build of this branch: it prints what it printed
+before. Reading its metadata says why — C# binds a virtual call to the type that *declares* the
+method, so the emitted reference is `AngouriMath.Entity::Stringize()` whatever the static type of
+the receiver, and no consumer ever names `Entity+Sumf::Stringize()` at all. The removal is
+invisible except to reflection that asks a node type for its own declared members.
+
+Devirtualising `Stringize()` cannot orphan an override outside the library either: `Entity` already
+carried five `internal` or `private protected` abstract members (`Priority`, `SortHashName`,
+`IntrinsicCondition`, `ToSymPy`, `InvertNode`), so no assembly but this one has ever been able to
+derive a node from it.
+
 ### `Compile` works in a trimmed or NativeAOT application
 
 The Linq compilation path found the method for each node by name —
@@ -181,8 +1710,72 @@ keeps it true.
 
 [#363](https://github.com/asc-community/AngouriMath/issues/363),
 [#746](https://github.com/asc-community/AngouriMath/issues/746) item 79.
+| **Silent** | `"derivative(y, x) + y - x".SolveEquation("y")`, and the same equation written `= 0` | `{ x }`, which is not a root of it | `{ y : derivative(y, x) + y - x = 0 }` |
+| **Silent** | `"integral(y, x) + y - x".SolveEquation("y")` | `{ -(C + -x) / (x + 1) }` | `{ y : integral(y, x) + y - x = 0 }` |
+| **Silent** | `"limit(y, x, 0) + y - x".SolveEquation("y")` | `{ x / 2 }` | `{ y : limit(y, x, 0) + y - x = 0 }` |
+| **Silent** | `"sum(y, k, 1, 3) + y - k".SolveEquation("y")` | `{ k / 4 }` | `{ y : sum(y, k, 1, 3) + y - k = 0 }` |
+| **Silent** | `"{ y : derivative(y, x) + y - x = 0 }".ToEntity().Simplify()` | `{ y : y - x = 0 }`, a different set | unchanged |
+
+### An equation whose unknown stands under a derivative is left unsolved
+
+`"derivative(y, x) + y - x".SolveEquation("y")` answered `{ x }`. Substituting that back —
+with this library's own `Substitute` — gives `derivative(x, x) + x - x`, which is `1`. The set
+named a member that is not a root.
+
+The derivative went to zero because `y` is not `x`, and every calculus operator does the same:
+`limit(y, x, 0)` is `y`, `integral(y, x)` is `x * y + C`, `sum(y, k, 1, 3)` is `3 * y`. Each is a
+decision about the *name* `y`, and the root the solver then returns says that name stands for an
+expression in `x` — so the answer denies the step that produced it. Every one of the operators
+was affected, and so was a quadratic in the unknown: `derivative(y, x) + y ^ 2 - x` answered
+`{ sqrt(x), -sqrt(x) }`, which leave `x ^ (-1/2) / 2` and `-1/2 * x ^ (-1/2)`.
+
+The equation is not thereby unsatisfiable, so the empty set would replace one false claim with
+another. What holds is the condition as written, and that is what comes back. Solving it needs a
+differential-equation solver, which
+[#746](https://github.com/asc-community/AngouriMath/issues/746) has as item 48 and which this
+library does not yet have.
+
+A root that does not mention the name the operator is taken over denies nothing, and is returned
+as before: `"derivative(y * x, x) + y - 1".SolveEquation("y")` is `{ 1/2 }`, and
+`"derivative(y ^ 2, y) - 2".SolveEquation("y")` is `{ 1 }` — there the unknown *is* the name the
+derivative binds, and no independence is claimed of it.
+
+The set builder had the same reading of its own bound name and lost it the same way:
+`{ y : derivative(y, x) + y - x = 0 }` simplified to `{ y : y - x = 0 }`, which is `{ x }`. A
+binder over `y` makes `y` range over values, and expressions in `x` are among them, so that
+simplification settles a condition that was written to stay open. It no longer fires.
+
+[#964](https://github.com/asc-community/AngouriMath/issues/964)
 
 ---
+| | `Entity.Set.SpecialSet.Create("NN")`, and any domain name this library does not have | `AngouriBugException` | `UnrecognizedDomainException: Unrecognized domain NN` |
+| | `Entity.Set.SpecialSet.Create(Domain.Any)`, and any `Domain` that is not one of the five sets | `AngouriBugException` | `NotSufficientlySupportedException: There is no special set for domain Any` |
+
+### An unknown domain is the caller's input, not a library defect
+
+`SpecialSet.Create(string)` and `SpecialSet.Create(Domain)` are both `public`. Given a name or a
+`Domain` value they do not know, both threw `AngouriBugException`, whose message ends *"please report
+about it to the official repository"* — so a caller who wrote `"NN"` was told their own typo was a
+defect in this library and asked to file it.
+
+Both are now the caller's error, and both stay under `AngouriMathBaseException`, so a `catch` for
+that is unaffected. Measured on a build of each side:
+
+| input | 2.3.0 | now |
+|---|---|---|
+| `Create("NN")` | `AngouriBugException: The given domain is not presented in those possible …please report about it to the official repository` | `UnrecognizedDomainException: Unrecognized domain NN` |
+| `Create(Domain.Any)` | the same | `NotSufficientlySupportedException: There is no special set for domain Any` |
+| `Create((Domain)99)` | the same | `NotSufficientlySupportedException: There is no special set for domain 99` |
+| `Create("RR")` | `RR` | `RR` |
+
+`UnrecognizedDomainException` has existed since it was written and nothing threw it;
+[`Docs/Usage/Exceptions.md`](Sources/AngouriMath/Docs/Usage/Exceptions.md) is where the difference
+between the three types is written down. `Domain.Any` is a documented member of the enum meaning *no
+restriction*, which is not a set this library has a node for — `Domains.IsWithinDomain` answers it
+before ever reaching `Create`, so nothing inside the library was affected.
+
+If you catch `AngouriBugException` around a call that builds a set from a name you did not choose,
+catch `MathSException` — or its parent — instead.
 
 ## 2.3.0 — since 2.2.0
 
@@ -975,12 +2568,222 @@ no integration rule reads: an irreducible of degree three or more, or a quadrati
 `(x^2 + 1)^2` is declined, and the ladder that would decompose it is deliberately not built, because
 every term it produces is over `(x^2 + c)^k` and would come back unevaluated in turn.
 
+*The `x^4 + 1` half of that is no longer true: allowing those real coefficients is exactly what the
+entry below does, and `x^2/(x^4 + 1)` is now answered. The rest of the paragraph stands — an
+irreducible of degree three or more, and a repeated quadratic, are still declined, and `(x^2 + 1)^2`
+still is.*
+
 Deciding that from the factorisation rather than by trying is what keeps the cost of declining to the
 one factorisation. Splitting regardless and recursing made `(1 - x^4)/(1 + x^4 + x^8)`, whose
 factorisation holds the irreducible quartic `x^4 - x^2 + 1`, take 18s to return the same unevaluated
 integral it returns in 203ms — measured, and the reason the guard is there rather than a preference.
 
 [#919](https://github.com/asc-community/AngouriMath/issues/919).
+
+### A biquadratic denominator is decomposed over the reals
+
+The same blindness one level further along, and the last place it reaches. The step above factors
+over `Q` and stops where `Q` does, so `x^4 + 1` — irreducible over the rationals — was left whole
+and `x^2/(x^4 + 1)` came back unevaluated. Over the reals it is
+`(x^2 - sqrt(2)x + 1)(x^2 + sqrt(2)x + 1)`, and both halves are read by the rule for a linear
+numerator over a quadratic. Nothing was missing but a factorisation the rational step is right to
+refuse.
+
+```
+"x^2/(x^4 + 1)".Integrate("x")
+
+was  integral(x ^ 2 / (x ^ 4 + 1), x)
+is   -1/2 * sqrt(2) * 1/2 / 2 * ln(x ^ 2 + sqrt(2) * x + 1)
+     + 1/2 * arctan((2 * x + sqrt(2)) * 1/2 * sqrt(2)) * 1/2 * sqrt(2)
+     + 1/2 * sqrt(2) * 1/2 / 2 * ln(x ^ 2 - sqrt(2) * x + 1)
+     + 1/2 * arctan((2 * x + -sqrt(2)) * 1/2 * sqrt(2)) * 1/2 * sqrt(2) + C
+```
+
+This is the integral [#233](https://github.com/asc-community/AngouriMath/issues/233) names as
+wanting "partial fractioning", and it is the first of that issue's list to need a factorisation
+rather than a rule. `1/(x^4 + 1)`, `1/(x^4 - 2)` and `1/(x^4 + 3x^2 + 1)` come with it.
+
+**Biquadratic only, and that is a boundary rather than a first cut.** A general quartic factors into
+real quadratics through its resolvent cubic, whose roots carry Cardano's nested radicals; a
+biquadratic `x^4 + px^2 + q` is the case where the resolvent is solvable by inspection and the two
+factors stay inside one square root. Two shapes come out of it, by the sign of `p^2 - 4q`: negative
+gives `(x^2 + ax + b)(x^2 - ax + b)` with `b = sqrt(q)` and `a = sqrt(2b - p)`, and positive gives
+the even `(x^2 + u)(x^2 + v)` with `u, v = (p -+ sqrt(p^2 - 4q))/2`. Zero is `(x^2 + p/2)^2`, a
+repeated quadratic, declined for the reason the step above declines one. **A quartic with an odd
+power in it — `x^4 + x^3 + 1`, `x^4 + x + 1` — is still declined**, and so is everything of degree
+five and up that does not factor over `Q`.
+
+**No condition is attached**, on the same argument as the step above: the two factors are distinct,
+so their product is zero exactly where the original denominator is, and nothing is cancelled.
+
+It is tried **after** both rational steps, which is what keeps a denominator that factors over `Q`
+in exact arithmetic: `x^4 + 3x^2 + 2` is decomposed by the step above and never arrives here to be
+given a square root it does not need. Declining stays as cheap as it was —
+`(1 - x^4)/(1 + x^4 + x^8)` returns the same unevaluated integral in the same fraction of a second,
+because every guard here is rational arithmetic on coefficients already read.
+
+`sqrt(tan(x))`, the one remaining entry on #233's list, is **not** answered by this. It reduces
+under `u = sqrt(tan x)` to `2 * integral(u^2/(u^4 + 1), u)`, which is now integrable — but the
+substitution that gets there is a separate capability and is not built here. *It is built in the
+entry below, and `sqrt(tan(x))` is now answered.*
+
+[#233](https://github.com/asc-community/AngouriMath/issues/233).
+
+### A fractional power, and the tangent, are substitutions
+
+Two substitutions, in one entry because neither reaches `sqrt(tan(x))` without the other and
+without the entry above. That integral is the last of the five
+[#233](https://github.com/asc-community/AngouriMath/issues/233) lists, and the one it calls "very
+painful, requires different solvers" — which it is. Three capabilities in a row:
+
+```
+int sqrt(tan(x)) dx
+  --- u = tan(x),  dx = du/(1 + u^2)  ------->  int sqrt(u)/(1 + u^2) du
+  --- t = sqrt(u), a fractional power  ------->  int 2t^2/(1 + t^4) dt
+  --- 1 + t^4 factored over the reals  ------->  logarithms and arctangents
+```
+
+Take any one away and it comes back unevaluated.
+
+```
+"sqrt(tan(x))".Integrate("x")
+
+was  integral(sqrt(tan(x)), x)
+is   a sum of two logarithms and two arctangents in sqrt(tan(x)) — the shape the
+     entry above produces, with sqrt(tan(x)) where it had x
+```
+
+**The fractional power.** A power substitution rewrites the other powers of the variable into
+powers of itself: for `u = x^r` the identity is `x^n = u^(n/r)`, applied wherever `n/r` is a whole
+number. A whole `r` reaches only the powers it divides, which is what this did before. An `r` of
+`1/2` reaches every one of them — including the bare `x`, which a whole `r` never can — so
+`int sqrt(x)/(1 + x^2)` becomes `int 2u^2/(1 + u^4) du`. `1/(1 + sqrt(x))`,
+`1/(sqrt(x) * (1 + x))`, `1/(sqrt(x) * (1 + x^2))` and `1/(sqrt(x) + x)` come with it.
+
+The rewrite is made in two passes, powers first and a leftover bare `x` second, because the tree
+is rewritten from the leaves up: in one pass the `x` inside `sqrt(x)` is reached before the
+`sqrt(x)` node is, and `u = sqrt(x)` turns it into `sqrt(u^2)` rather than `u` — an integrand free
+of `x` and no more integrable than it started.
+
+**The tangent.** An integrand that is a function of `tan(x)` and of nothing else becomes a
+rational function under `u = tan(x)`, with `dx` as `du/(1 + u^2)`. The test is the rewrite itself:
+replace every `tan(x)` and see whether an `x` survives. `tan(x) + x` keeps one and is declined,
+which is right — it is answered, but by linearity over the sum.
+
+This is a step of its own rather than a candidate for the general substitution, and the reason is
+worth recording. The general one divides the integrand by `du/dx` and asks what is left, which
+works while the substitution survives the division. Here it does not: `sqrt(tan(x))` over the
+derivative of `sqrt(tan(x))` is `2 tan(x) cos(x)^2`, which is `sin(2x)` and is simplified to it —
+a correct answer to a question that has stopped being about the tangent.
+
+**What is still declined**, each by what the rewrite hands on rather than by the rewrite:
+`cotan` is its own node rather than a reciprocal of the tangent, so `sqrt(cotan(x))` never starts;
+`tan(x)^2` and `tan(x)^3` become improper fractions, and dividing an improper fraction out is not
+something the rational integrator does; `1/(1 + tan(x)^2)` becomes `1/(1 + u^2)^2`, a repeated
+irreducible quadratic. On the other side, `sqrt(x)/(1 + x^4)` becomes `2u^2/(1 + u^8)`, whose
+denominator is neither factorable over the rationals nor a biquadratic.
+
+**The rule for the tangent itself still wins**, being reached first: `int tan(x)` is
+`-ln(cos(x)) + C` and not the longer thing this would produce.
+
+**The corpus gate now reads 40 solved of 40.** Its one unsolved problem was `int:hard`, and
+`int:hard` is `sqrt(tan(x))` — chosen for that list as the standing example of an integral out of
+reach. The gate reached the same verdict independently, by differentiating the answer back rather
+than by comparing it with anything.
+
+[#233](https://github.com/asc-community/AngouriMath/issues/233).
+
+### An improper quotient is divided out before it is decomposed
+
+Every step of the rational integrator wants a **proper** fraction — a numerator of lower degree
+than the denominator — and each of the three declines an improper one rather than dividing it out.
+So `x^2/(x + 1)` had no antiderivative, although it is `x - 1 + 1/(x + 1)` and every piece of that
+has been integrable throughout.
+
+```
+"x^2/(x + 1)".Integrate("x")
+
+was  integral(x ^ 2 / (x + 1), x)
+is   x ^ 2 / 2 + -x + ln(x + 1) + C
+```
+
+**The division is not new code.** `TreeAnalyzer.PolynomialLongDivision` has done it all along, for
+the simplifier's own `PolynomialLongDivision` rule set; the integrator simply never asked it. What
+changed is one call, placed before the three decompositions rather than after them.
+
+New with it, as written: `x^3/(1 + x^2)`, `x^4/(x^2 + 1)`, `(x^5 + 2)/(x^2 + 1)`,
+`(x^2 + 3x + 5)/(x + 2)`, and the exact-division cases `(x^3 + 1)/(x + 1)` and `(x^2 - 1)/(x - 1)`,
+whose proper part is zero.
+
+New with it **through a substitution**, which is where it matters more, since the substitution
+produces the improper fraction rather than the user writing one: `tan(x)^2`, `tan(x)^3` and
+`sqrt(x)/(x + 1)` were all declined for this and no other reason, each having been named as such
+in the tests that recorded the boundary. `int tan(x)^2` comes back as
+`tan(x) - arctan(tan(x)) + C` rather than the textbook `tan(x) - x`, which is the same function on
+the principal branch and is what the rewrite has to say without an assumption about which branch
+`x` is on.
+
+**A proper fraction is untouched.** The helper answers nothing for one, so the three steps below
+see exactly what they saw before: `int 1/(x + 1)` is still `ln(x + 1) + C` and `int x/(x^2 + 1)`
+still `ln(x^2 + 1)/2 + C`.
+
+**A symbolic leading coefficient is still declined.** `x^2/(a + b*x)` —
+[#180](https://github.com/asc-community/AngouriMath/issues/180)'s item 18 — would have the division
+divide by `b`, which is not decidably non-zero, and at `b = 0` the quotient is `x^2/a`, whose
+antiderivative is not the limit of the divided form. `x^2/(x + a)` is declined too, for a narrower
+reason: the leading coefficient there is `1`, but the helper does not divide a polynomial whose
+other coefficients are symbolic.
+
+[#180](https://github.com/asc-community/AngouriMath/issues/180).
+
+### A system with fewer equations than unknowns is answered, not refused
+
+`Solve` raised `WrongNumberOfArgumentsException` for a system with fewer equations than
+unknowns — a message that says the caller called it wrongly, for a caller who did nothing wrong.
+`2x - 4y = 12` in `x` and `y` is a well-formed question; it simply has infinitely many answers.
+
+```
+MathS.Equations("2*x - 4*y - 12").Solve("x", "y")
+
+was  WrongNumberOfArgumentsException: Number of equations must be equal to that of vars
+is   [[6 + 2 * t_1, t_1]]
+```
+
+which is `x = 6 + 2t, y = t` — the answer the issue asks for in its body.
+
+**The answer type did not change.** A solution has always been a row whose i-th entry is the
+i-th unknown's value, and nothing said those entries may not mention a variable. The unknowns a
+row reduction leaves free become parameters, named the way the constant of integration is named
+in an ODE's answer, and the rest are written in terms of them. The system from the issue thread,
+three equations in five unknowns, comes back with two of them:
+
+```
+{ p + 2q + 4r + s - u = 1, 2p + 4q + 8r + 3s - 4u = 2, p + 3q + 7r + 3u = -2 }
+
+is   [[7 + 2 * t_1 + 3 * t_2, -3 + (-3) * t_1 + (-2) * t_2, t_1, 2 * t_2, t_2]]
+```
+
+**Only the short count is taken this way.** A square system that is rank-deficient still reaches
+the eliminator, which has answered it with a free parameter since
+[#550](https://github.com/asc-community/AngouriMath/issues/550); those answers are unchanged, as
+are every determined and every overdetermined system.
+
+**A contradictory short system is `null`**, the same as a contradictory square one, and that
+continues to mean *there are no solutions* rather than *no answer was found*.
+
+**What still raises.** The system has to be linear in the unknowns, checked rather than assumed
+— `x^2 + y^2 = 1` and `x*y = 1` fail the check — and the coefficients **on the unknowns** must be
+rational, so `a*x + y = 1` raises too. That last is a soundness requirement rather than a
+convenience: a row reduction has to decide whether a pivot is zero, the general test available
+is structural, and choosing a pivot that is zero without being written as `0` produces a wrong
+family rather than no answer. The **constant** term is under no such restriction, being never a
+pivot, so `2x - 4y = k` is answered with `k` symbolic.
+
+**Code that caught `WrongNumberOfArgumentsException` around `Solve`** to detect an
+underdetermined system now gets a matrix for the linear ones, and the exception only for the
+rest.
+
+[#212](https://github.com/asc-community/AngouriMath/issues/212).
 
 ### A polynomial equation that factors is solved through its factors
 
@@ -3492,6 +5295,31 @@ And what cannot be compiled is named rather than failing obscurely.
 
 Not behavioural changes, listed so that a reader working through this file has the whole picture.
 
+- **The branches a simplification went down and came back from.**
+  `DerivationPath.Abandoned`, beside the `Steps` it kept. The data was recorded already —
+  reconstructing the path searched the recorded edges and discarded everything not on the chain —
+  so this exposes it rather than collecting anything new. Each abandoned step carries the
+  expression it left from, which is the branch's root. Deduplicated against itself and against
+  the kept chain: the raw edges are mostly one rewrite recorded once per level of the candidate
+  search, and `x^(-1)/(y/z)` produced 425 of them across 13 distinct steps.
+  [#273](https://github.com/asc-community/AngouriMath/issues/273).
+- **An analytical solver for first-order linear ordinary differential equations.**
+  `MathS.SolveOde(equation, function, variable)`, by the integrating factor. The unknown is written
+  as an application — `apply(y, x)` — rather than a bare variable, because `derivative(y, x)` is
+  `0`: a variable does not depend on `x`. `y' + y = 1` comes back as `1 + C_1 * e ^ (-x)`, and
+  `y' + y/x = 1` as `C_1 / x + x / 2`. It returns `null` where the equation is not linear in the
+  unknown and its derivative, and where either of the two integrals has no closed form, which is
+  why `y' + y = e^(x^2)` is declined. Nothing existed before it; there is no behaviour to compare.
+  [#241](https://github.com/asc-community/AngouriMath/issues/241).
+- **Integrals wanting a substitution by a power of the variable that occurs nowhere.**
+  `int x / (x^4 + 1)` is `arctan(x^2)/2 + C`, and so for `x/(x^4 - 1)`, `x/(x^4 + 4)`,
+  `x^2/(x^6 + 1)`, `x/(x^6 + 1)`, `x^3/(x^8 + 1)` and `x^3/(x^12 + 1)`. Each was previously
+  returned unevaluated. Two things had to change: `x^2` is now offered as a candidate although
+  it is written nowhere in `x / (x^4 + 1)`, and substituting it rewrites `x^4` as `(x^2)^2` so
+  that there is something for it to replace. `int x^3 / (x^4 + 1)` worked throughout, its own
+  substitution being one that occurs, which is what made the gap hard to see. No integral that
+  was answered before is answered differently.
+  [#233](https://github.com/asc-community/AngouriMath/issues/233).
 - **A modulus node.** `Modf`, `MathS.Mod`, the `%` operator on `Entity` in C# and F#, the `mod`
   keyword in the parser, evaluation, simplification, differentiation, limits, both compilers, LaTeX
   and SymPy export. `a % b` on `Entity` is *not* `int`'s `%` — it is floored, and its documentation

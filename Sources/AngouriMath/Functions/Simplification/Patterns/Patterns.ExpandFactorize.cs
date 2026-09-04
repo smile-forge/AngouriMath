@@ -131,7 +131,8 @@ namespace AngouriMath.Functions
         /// </para>
         /// </remarks>
         /// <returns><see langword="null"/> when the sum is not a square, so the rule does not fire.</returns>
-        private static Entity? CollapseToPerfectSquare(Entity expr)
+        /// <remarks>Internal so that the data form of this set calls it rather than repeating it.</remarks>
+        internal static Entity? CollapseToPerfectSquare(Entity expr)
         {
             if (!expr.Nodes.Any(node => node is Powf(_, Rational and not Integer)))
                 return null;
@@ -271,7 +272,8 @@ namespace AngouriMath.Functions
         /// of two are left to those rules, which are older and better tested.
         /// </remarks>
         /// <returns><see langword="null"/> when no factor is shared, so the rule does not fire.</returns>
-        private static Entity? CollectCommonFactors(Entity expr)
+        /// <remarks>Internal so the data form of this set calls it rather than repeating it.</remarks>
+        internal static Entity? CollectCommonFactors(Entity expr)
         {
             var terms = Sumf.LinearChildren(expr).ToList();
             return terms.Count > 2 ? CollectOver(terms) : null;

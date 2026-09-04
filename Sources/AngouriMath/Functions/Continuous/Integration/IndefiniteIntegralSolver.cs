@@ -45,11 +45,38 @@ namespace AngouriMath.Functions.Algebra
         /// applies and leaves something that will not integrate — it takes the denominator
         /// apart differently, so a failure of the one is no evidence about the other.
         /// </para>
+        /// <para>
+        /// Both of those factor over the rationals and stop where the rationals do, which left
+        /// x^2/(x^4 + 1) unevaluated: x^4 + 1 is irreducible over Q, and over the reals it is
+        /// (x^2 - sqrt(2)x + 1)(x^2 + sqrt(2)x + 1). The third step
+        /// (<see cref="Functions.PartialFractions.TrySplitBiquadraticOverTheReals"/>) reads a
+        /// biquadratic denominator that way. It is last because it is the only one that
+        /// introduces a radical, and a denominator that factors over Q should be taken apart in
+        /// exact arithmetic by one of the two above.
+        /// </para>
+        /// <para>
+        /// <b>All three of those want a proper fraction</b>, and each declines an improper one
+        /// rather than dividing it out — so <c>x^2/(x + 1)</c> had no antiderivative although
+        /// it is <c>x - 1 + 1/(x + 1)</c> and every piece of that is read. The division is the
+        /// first step here for that reason, and it is not new code:
+        /// <see cref="TreeAnalyzer.PolynomialLongDivision"/> has done it all along for the
+        /// simplifier's own rule set, and the integrator simply never asked it.
+        /// </para>
         /// </remarks>
         internal static Entity? SolveByPartialFractions(Entity expr, Entity.Variable x, bool integrateByParts)
         {
             if (expr is not Entity.Divf(var numerator, var denominator))
                 return null;
+
+            // The helper answers null for a fraction that is already proper, so this cannot
+            // fire on one and recurse into the problem it started from. The check on the
+            // quotient is the second half of that guarantee: a division that came back with
+            // nothing taken out would hand the same fraction on and not terminate.
+            if (TreeAnalyzer.PolynomialLongDivision(numerator, denominator) is var (quotient, properPart)
+                && quotient.Evaled != Entity.Number.Integer.Create(0)
+                && Integration.ComputeIndefiniteIntegral(quotient, x, integrateByParts) is { } wholePart
+                && Integration.ComputeIndefiniteIntegral(properPart, x, integrateByParts) is { } fractionPart)
+                return wholePart + fractionPart;
 
             if (Functions.PolynomialFactoring.TrySplitOffRationalRoot(
                     numerator, denominator, x, out var simple, out var restNumerator, out var restDenominator)
@@ -62,6 +89,12 @@ namespace AngouriMath.Functions.Algebra
                 && Integration.ComputeIndefiniteIntegral(left, x, integrateByParts) is { } overOne
                 && Integration.ComputeIndefiniteIntegral(right, x, integrateByParts) is { } overOther)
                 return overOne + overOther;
+
+            if (Functions.PartialFractions.TrySplitBiquadraticOverTheReals(
+                    numerator, denominator, x, out var overOneReal, out var overOtherReal)
+                && Integration.ComputeIndefiniteIntegral(overOneReal, x, integrateByParts) is { } realFirst
+                && Integration.ComputeIndefiniteIntegral(overOtherReal, x, integrateByParts) is { } realRest)
+                return realFirst + realRest;
 
             return null;
         }
@@ -191,6 +224,56 @@ namespace AngouriMath.Functions.Algebra
         };
 
         /// <summary>
+        /// An integrand that is a function of <c>tan(x)</c> and of nothing else, integrated by
+        /// the substitution <c>u = tan(x)</c>, under which <c>dx</c> is <c>du/(1 + u^2)</c>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The substitution that turns every rational function of the tangent into a rational
+        /// function, and <c>int sqrt(tan(x))</c> — the last of the five integrals
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/233">#233</a> lists — into
+        /// <c>int sqrt(u)/(1 + u^2) du</c>.
+        /// </para>
+        /// <para>
+        /// <b>Why this is not a candidate in <see cref="SolveBySubstitution"/>.</b> That one
+        /// divides the integrand by <c>du/dx</c> and asks whether any <c>x</c> is left, which
+        /// works when the substitution survives the division. Here it does not:
+        /// <c>sqrt(tan(x))</c> over the derivative of <c>sqrt(tan(x))</c> is
+        /// <c>2 tan(x) cos(x)^2</c>, which is <c>sin(2x)</c> and is simplified to it — a correct
+        /// answer to a question that has stopped being about the tangent. Rewriting the integrand
+        /// asks a different question and does not lose the shape.
+        /// </para>
+        /// <para>
+        /// The test is the rewrite itself: replace every <c>tan(x)</c> and see whether an
+        /// <c>x</c> survives. <c>tan(x) + x</c> keeps one and is declined, which is right — it is
+        /// not a function of the tangent alone. <c>cotan</c> is <b>not</b> covered, since it is
+        /// its own node rather than a reciprocal of this one, so <c>sqrt(cotan(x))</c> is still
+        /// declined.
+        /// </para>
+        /// <para>
+        /// <b>No condition is owed by the substitution</b>, but the answer inherits the
+        /// tangent's: <c>u = tan(x)</c> is undefined exactly where the integrand is, since the
+        /// integrand is a function of it, and <c>1 + u^2</c> is never zero for real <c>u</c>.
+        /// </para>
+        /// </remarks>
+        internal static Entity? SolveByTangentSubstitution(Entity expr, Entity.Variable x, bool integrateByParts)
+        {
+            var tangent = MathS.Tan(x);
+            if (!expr.ContainsNode(tangent))
+                return null;
+
+            var uSub = Variable.CreateUnique(expr, "u_tan");
+            var inU = expr.Substitute(tangent, uSub);
+            if (inU.ContainsNode(x))
+                return null;
+
+            var integrand = (inU / (1 + MathS.Sqr(uSub))).InnerSimplified;
+            return Integration.ComputeIndefiniteIntegral(integrand, uSub, integrateByParts) is { } result
+                ? result.Substitute(uSub, tangent)
+                : null;
+        }
+
+        /// <summary>
         /// Attempts to solve an integral using u-substitution.
         /// Looks for patterns where f(g(x)) * g'(x) can be integrated as F(g(x)).
         /// </summary>
@@ -217,7 +300,7 @@ namespace AngouriMath.Functions.Algebra
 
                 // Try to divide expr by duDx and check if result is independent of x
                 // Replace all occurrences of u's expression with a temporary variable
-                var integrandInU = (expr / duDx).Substitute(u, uSub).Simplify(1);
+                var integrandInU = InTermsOf(expr / duDx, u, uSub, x).Simplify(1);
                 if (integrandInU is Providedf(var innerExpr, _)) integrandInU = innerExpr; // TODO: singularities ignored but not handled properly
 
                 // If the result doesn't contain x anymore, we found a valid substitution
@@ -242,6 +325,91 @@ namespace AngouriMath.Functions.Algebra
         }
 
         /// <summary>
+        /// <paramref name="expr"/> written in terms of <paramref name="uSub"/>, where that stands
+        /// for <paramref name="u"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Ordinarily that is a plain substitution: the candidate occurs in the integrand, and
+        /// replacing it is all that is wanted.
+        /// </para>
+        /// <para>
+        /// <b>A power of the variable is the exception, and it is the one that mattered.</b>
+        /// Substituting <c>u = x^2</c> into <c>x / (x^4 + 1)</c> replaces nothing, because
+        /// <c>x^4</c> is not written as <c>(x^2)^2</c> and a substitution matches what is
+        /// written. So the integrand kept its <c>x</c>, the candidate was rejected, and
+        /// <c>int x / (x^4 + 1)</c> came back unevaluated while <c>int x^3 / (x^4 + 1)</c> —
+        /// whose substitution does occur — did not.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/233">#233</a>
+        /// </para>
+        /// <para>
+        /// So a power substitution rewrites the other powers of the variable into powers of
+        /// itself. For <c>u = x^r</c> the identity is <c>x^n = u^(n/r)</c>, and the rewrite is
+        /// made wherever <c>n/r</c> is a whole number — which for a whole <c>r</c> means
+        /// <c>r</c> divides <c>n</c>, and is the only case this covered at first.
+        /// </para>
+        /// <para>
+        /// <b>A fractional <c>r</c> is the case that reaches the other way</b>, and it is what
+        /// <c>int sqrt(x)/(1 + x^2)</c> needs. There <c>u = sqrt(x)</c>, so <c>r</c> is
+        /// <c>1/2</c> and <c>n/r</c> is <c>2n</c> — a whole number for every <c>n</c>, including
+        /// the bare <c>x</c> that a whole <c>r</c> can never rewrite. The integrand becomes
+        /// <c>2u^2/(1 + u^4)</c>, which is answered.
+        /// </para>
+        /// <para>
+        /// Nothing is assumed by it: the caller still checks that no <c>x</c> survives, so a
+        /// rewrite that does not clear the variable leaves the candidate rejected as before.
+        /// </para>
+        /// </remarks>
+        private static Entity InTermsOf(Entity expr, Entity u, Entity.Variable uSub, Entity.Variable x)
+        {
+            if (u is not Powf(var powerBase, Number.Rational exponent) || powerBase != x)
+                return expr.Substitute(u, uSub);
+            var r = exponent.ERational;
+            if (r.IsZero)
+                return expr.Substitute(u, uSub);
+            // The written powers of x first, and only then a bare x that is left over. Both in
+            // one pass does not work, because Replace rewrites from the leaves up: the x inside
+            // sqrt(x) is reached before the sqrt(x) node is, so with u = sqrt(x) it becomes
+            // sqrt(u^2) rather than u, and the integrand ends up free of x and no more
+            // integrable than it started.
+            //
+            // The exponent is read as a rational rather than a whole number because the
+            // candidate is itself one of these nodes: with u = sqrt(x) the integrand still holds
+            // a sqrt(x), and leaving it alone leaves an x that rejects the candidate. Anything
+            // else -- x inside a function, or a base that is not x -- is left for the caller's
+            // check on whether x survives.
+            var written = expr.Replace(node =>
+                node is Powf(var otherBase, Number.Rational otherExponent)
+                && otherBase == x
+                && Rewritten(otherExponent.ERational) is { } power
+                    ? power
+                    : node);
+            return written.Replace(node =>
+                node == x && Rewritten(PeterO.Numbers.ERational.One) is { } bare ? bare : node);
+
+            // u^(n/r), where that is a whole power, and null where it is not. Done on the four
+            // integers rather than by dividing the rationals and asking whether the result is
+            // whole: an ERational quotient is not reduced, so 4/2 answers that question with a
+            // denominator of two and every whole r would be refused.
+            //
+            // The ceiling is against a tiny r turning a modest power of x into an enormous one,
+            // rather than against anything mathematical.
+            Entity? Rewritten(PeterO.Numbers.ERational n)
+            {
+                var scaled = n.Numerator.Multiply(r.Denominator);
+                var by = n.Denominator.Multiply(r.Numerator);
+                if (by.IsZero || !scaled.Remainder(by).IsZero)
+                    return null;
+                var whole = scaled.Divide(by);
+                if (whole.IsZero || whole.Abs().CompareTo(PeterO.Numbers.EInteger.FromInt32(64)) > 0)
+                    return null;
+                return whole.Equals(PeterO.Numbers.EInteger.One)
+                    ? uSub
+                    : MathS.Pow(uSub, Number.Integer.Create(whole));
+            }
+        }
+
+        /// <summary>
         /// Finds potential substitution candidates u = g(x) from the expression.
         /// For example, common patterns to try:
         /// 1. f(ax + b) * a  ->  u = ax + b
@@ -261,6 +429,20 @@ namespace AngouriMath.Functions.Algebra
                         break;
                     case Powf(var @base, var exp):
                         if (@base == x) candidates.Add(node); // Power expressions x^n
+                        // And the roots of that power, which need not occur anywhere to be the
+                        // right substitution: `int x / (x^4 + 1)` wants u = x^2, and x^2 appears
+                        // nowhere in it. A divisor of the exponent is the condition for the
+                        // rewrite to be exact -- see InTermsOf -- so the candidates are exactly
+                        // the divisors, and each is still tested by whether it clears the
+                        // variable. https://github.com/asc-community/AngouriMath/issues/233
+                        if (@base == x
+                            && exp is Number.Integer power
+                            && power.EInteger.CanFitInInt32()
+                            && power.EInteger.ToInt32Checked() is var n
+                            && n > 2)
+                            for (var divisor = 2; divisor + divisor <= n; divisor++)
+                                if (n % divisor == 0)
+                                    candidates.Add(MathS.Pow(x, divisor));
                         // Exponential with non-trivial argument
                         if (@base != x && @base.ContainsNode(x)) candidates.Add(@base);
                         if (exp != x && exp.ContainsNode(x)) candidates.Add(exp);

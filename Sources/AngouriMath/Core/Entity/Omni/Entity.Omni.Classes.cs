@@ -492,6 +492,21 @@ namespace AngouriMath
                 protected override Entity[] InitDirectChildren() =>
                     new[] { Predicate.Substitute(Var, Variable.CreateTemp(Predicate.Vars)) };
 
+                /// <summary>
+                /// The written parts, which is what a pattern has to be able to say. The rename
+                /// above is what makes traversal alpha-invariant and it is exactly what puts the
+                /// bound name out of a pattern's reach, so matching reads the pair as declared.
+                /// <a href="https://github.com/asc-community/AngouriMath/issues/1074">#1074</a>
+                /// </summary>
+                /// <remarks>
+                /// A pattern that reads these still cannot tell <c>{ x : x &gt; 0 }</c> from
+                /// <c>{ y : y &gt; 0 }</c>, because the only pattern allowed in the name position
+                /// is a hole — <see cref="Core.Transformations.Matching.MatchPattern"/>'s
+                /// <c>Binder</c> refuses anything else. It is the hole being repeated in the body
+                /// that says "the same variable", and that reads the same under either name.
+                /// </remarks>
+                internal override IReadOnlyList<Entity> MatchableChildren => new[] { Var, Predicate };
+
                 /// <inheritdoc/>
                 public override bool IsSetFinite => false;
                 /// <inheritdoc/>
@@ -551,7 +566,13 @@ namespace AngouriMath
                         Domain.Rational => new Rationals(),
                         Domain.Real => new Reals(),
                         Domain.Complex => new Complexes(),
-                        _ => throw new AngouriBugException("The given domain is not presented in those possible")
+                        // Domain.Any is a documented member of the enum and means "no restriction",
+                        // which is not a set this library has a node for -- Domains.IsWithinDomain
+                        // answers it before ever reaching here. Either that or a value cast in from
+                        // outside the enum, and neither is the library's fault, so neither is told
+                        // to file a bug report.
+                        _ => throw new NotSufficientlySupportedException(
+                            $"There is no special set for domain {domain}")
                     };
                     InnerStorage[domain] = result;
                     return result;
@@ -565,7 +586,11 @@ namespace AngouriMath
                         "QQ" or "Rationals" => Domain.Rational,
                         "RR" or "Reals" => Domain.Real,
                         "CC" or "Complexes" => Domain.Complex,
-                        _ => throw new AngouriBugException("The given domain is not presented in those possible")
+                        // A name this switch does not know came from the caller: Create(string) is
+                        // public, and the only other route in is a SPECIALSET token, every spelling
+                        // of which is listed above. UnrecognizedDomainException has existed for
+                        // this case since it was written and nothing threw it.
+                        _ => throw new UnrecognizedDomainException(domain)
                     };
 
                 /// <summary>

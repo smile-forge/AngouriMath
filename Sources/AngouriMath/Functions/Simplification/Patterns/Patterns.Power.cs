@@ -133,6 +133,20 @@ namespace AngouriMath.Functions
             // c ^ log(c, a) = a
             Powf(Number const1, Logf(Number const1a, var any1)) when const1 == const1a => any1,
 
+            // e ^ ln(a) = a, which is the same identity and needs its own arm because the one
+            // above cannot reach it: `e` is a Variable rather than a Number, so `ln(a)` -- which
+            // is stored as log(e, a) -- never presents a numeric base however it is written.
+            // https://github.com/asc-community/AngouriMath/issues/994
+            //
+            // Assumptions: none. b^log_b(a) = a needs ln(b) to be non-zero, and e is decidably
+            // neither 0 nor 1, so there is nothing left to discharge. It is not restricted to the
+            // positive reals either, because on the principal branch ln(-3) is ln(3) + i*pi and
+            // e^(ln(3) + i*pi) is -3; and at a = 0 both sides are 0, since ln(0) is -oo here and
+            // e^(-oo) is 0. A symbolic base stays refused -- b != 1 is not decidable for it, and
+            // 1^log(1, a) is 1 rather than a.
+            Powf(var base1, Logf(var base1a, var any1))
+                when base1 == base1a && base1 == Variable.e => any1,
+
             Mulf(Powf(var any1, var any3), Mulf(var any1a, var any2)) when any1 == any1a => new Powf(any1, any3 + 1) * any2,
             Mulf(Powf(var any1, var any3), Mulf(var any2, var any1a)) when any1 == any1a => new Powf(any1, any3 + 1) * any2,
             Mulf(Mulf(var any1, var any2), Powf(var any1a, var any3)) when any1 == any1a => new Powf(any1, any3 + 1) * any2,
@@ -194,9 +208,27 @@ namespace AngouriMath.Functions
             // https://github.com/asc-community/AngouriMath/issues/721
             Logf(var any1, var any1a) logarithm when any1 == any1a
                 => new Providedf(1, logarithm.DomainCondition),
-            Logf(Divf(Integer(1), var any1), Divf(Integer(1), var any2)) => MathS.Log(any1, any2),
-            Logf(var any1, Divf(Integer(1), var any2)) => -MathS.Log(any1, any2),
-            Logf(Divf(Integer(1), var any1), var any2) => -MathS.Log(any1, any2),
+            // ln(1/b) = -ln(b) is false on the negative reals, for the reason the pair of rules
+            // below is guarded for: the principal argument does not negate with its logarithm.
+            // At b = -0.63, ln(1/b) is 0.462 + pi*i and -ln(b) is 0.462 - pi*i. These three were
+            // applied unconditionally while their neighbours ten lines down carried a guard, and
+            // `work/rulecheck` reports them once its corpus is wide enough to build the shape.
+            //
+            // The condition is the same one, and is asked through the same helper: ln(1/b) is
+            // ln(1) - ln(b), so a reciprocal is the difference case with a numerator of 1. Both
+            // ways of earning it carry over -- the operand is decidably a positive real, or the
+            // limit machinery is reading towards a destination and has established the sign.
+            // https://github.com/asc-community/AngouriMath/issues/721
+            Logf(Divf(Integer(1), var any1), Divf(Integer(1), var any2))
+                when MayGatherLogarithms(Integer.One, any1, isDifference: true)
+                     && MayGatherLogarithms(Integer.One, any2, isDifference: true)
+                => MathS.Log(any1, any2),
+            Logf(var any1, Divf(Integer(1), var any2))
+                when MayGatherLogarithms(Integer.One, any2, isDifference: true)
+                => -MathS.Log(any1, any2),
+            Logf(Divf(Integer(1), var any1), var any2)
+                when MayGatherLogarithms(Integer.One, any1, isDifference: true)
+                => -MathS.Log(any1, any2),
             
 
             // ln(a) + ln(b) = ln(a*b), and the difference likewise, are false off the positive
@@ -219,6 +251,13 @@ namespace AngouriMath.Functions
             // sqrt(8) = 2 * sqrt(2), cbrt(54) = 3 * cbrt(2)
             Powf(Integer { IsPositive: true } radicand, Rational and not Integer and var power)
                 when ReduceRadical(radicand, power) is { } reduced => reduced,
+
+            // sqrt(5 + 2*sqrt(6)) = sqrt(2) + sqrt(3). The rule above takes a whole power out
+            // from under one root; this one takes a root out from under another, which is the
+            // nesting rather than the size.
+            Powf(var radicand, Rational half)
+                when half.ERational.Equals(ERational.Create(EInteger.One, EInteger.FromInt32(2)))
+                    && DenestRadical(radicand) is { } denested => denested,
 
             _ => x
         };
@@ -332,7 +371,7 @@ namespace AngouriMath.Functions
         /// and the base holds a positive sign on the approach to its destination while the exponent
         /// is real along it.
         /// </summary>
-        private static bool MayTakeLogOfPower(Entity @base, Entity exponent)
+        internal static bool MayTakeLogOfPower(Entity @base, Entity exponent)
             => (IsPositiveReal(@base) && MayBeTakenAsReal(exponent))
                || Algebra.LimitFunctional.MayTakeLogOfPowerHere(@base, exponent);
 
@@ -341,7 +380,7 @@ namespace AngouriMath.Functions
         /// positive numbers, or because a limit is being read and they hold their sign on the
         /// approach to its destination.
         /// </summary>
-        private static bool MayGatherLogarithms(Entity left, Entity right, bool isDifference)
+        internal static bool MayGatherLogarithms(Entity left, Entity right, bool isDifference)
             => (IsPositiveReal(left) && IsPositiveReal(right))
                || Algebra.LimitFunctional.MayGatherLogarithmsHere(left, right, isDifference);
 
@@ -390,7 +429,7 @@ namespace AngouriMath.Functions
         /// <see langword="null"/> when nothing can be pulled out, so that the rule does
         /// not fire and rewriting terminates.
         /// </returns>
-        private static Entity? ReduceRadical(Integer radicand, Rational power)
+        internal static Entity? ReduceRadical(Integer radicand, Rational power)
         {
             var denominator = power.ERational.Denominator;
             if (denominator < 2 || denominator > 64)
@@ -420,6 +459,162 @@ namespace AngouriMath.Functions
             // n^(p/q) = (a^q * b)^(p/q) = a^p * b^(p/q)
             return new Powf(Integer.Create(outside), Integer.Create(power.ERational.Numerator))
                  * new Powf(Integer.Create(inside), power);
+        }
+
+        /// <summary>
+        /// The exact square root of a non-negative rational, or <see langword="null"/> where it
+        /// has none. <c>4/9</c> gives <c>2/3</c>; <c>2</c> gives nothing.
+        /// </summary>
+        /// <remarks>
+        /// A rational in lowest terms is a square exactly when its numerator and denominator both
+        /// are, since a square's prime factorisation has even exponents throughout and the two
+        /// share no prime. Asked of each separately, which is why there is no gcd here.
+        /// </remarks>
+        private static ERational? ExactSquareRoot(ERational value)
+        {
+            if (value.IsNegative || !value.IsFinite)
+                return null;
+            var numerator = value.Numerator.Sqrt();
+            if (!numerator.Multiply(numerator).Equals(value.Numerator))
+                return null;
+            var denominator = value.Denominator.Sqrt();
+            if (!denominator.Multiply(denominator).Equals(value.Denominator))
+                return null;
+            return ERational.Create(numerator, denominator);
+        }
+
+        /// <summary>
+        /// <c>sqrt(a + b*sqrt(c))</c> written without the nesting, as <c>sqrt(x) +- sqrt(y)</c>,
+        /// or <see langword="null"/> where it has no such form.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Squaring <c>sqrt(x) + sqrt(y)</c> gives <c>x + y + 2*sqrt(x*y)</c>, so matching it
+        /// against <c>a + b*sqrt(c)</c> asks for <c>x + y = a</c> and <c>4*x*y = b^2*c</c> —
+        /// which makes <c>x</c> and <c>y</c> the two roots of <c>t^2 - a*t + b^2*c/4</c>, namely
+        /// <c>(a +- sqrt(a^2 - b^2*c))/2</c>. They are rational exactly when
+        /// <c>d = a^2 - b^2*c</c> is the square of one, and that is the whole test: a decidable
+        /// question in exact arithmetic rather than a search.
+        /// </para>
+        /// <para>
+        /// <b>The sign of <c>b</c> chooses between the two forms.</b> Squaring gives
+        /// <c>a + |b|*sqrt(c)</c> whichever way, since <c>2*sqrt(x*y)</c> is not negative — so a
+        /// negative <c>b</c> is the difference <c>sqrt(x) - sqrt(y)</c>, which needs
+        /// <c>x >= y</c> and gets it, <c>sqrt(d)</c> being non-negative.
+        /// </para>
+        /// <para>
+        /// <b>Every condition reduces to two.</b> The identity needs <c>x</c> and <c>y</c>
+        /// non-negative and the radicand itself non-negative; given <c>a >= 0</c> and
+        /// <c>d >= 0</c>, all of them follow — <c>sqrt(d) &lt;= a</c> makes <c>y</c>
+        /// non-negative, and <c>a - |b|*sqrt(c) >= 0</c> is <c>d >= 0</c> restated. So the rule
+        /// asks for a non-negative <c>a</c> and a <c>d</c> that is a rational square, and needs
+        /// nothing else.
+        /// </para>
+        /// <para>
+        /// Returns null rather than the input where it does not apply, so the rule does not fire
+        /// and the rewriting terminates — the same contract as
+        /// <see cref="ReduceRadical(Integer, Rational)"/> above.
+        /// </para>
+        /// </remarks>
+        internal static Entity? DenestRadical(Entity radicand)
+        {
+            // a + b*sqrt(c), read off the sum's terms: exactly one rational, exactly one
+            // rational multiple of a root. Anything else is not this shape.
+            ERational? rational = null;
+            ERational? coefficient = null;
+            ERational? under = null;
+            foreach (var term in Sumf.LinearChildren(radicand))
+            {
+                if (term.Evaled is Rational whole)
+                {
+                    if (rational is not null)
+                        return null;
+                    rational = whole.ERational;
+                    continue;
+                }
+                if (coefficient is not null || !TryReadRootTerm(term, out var scale, out var inside))
+                    return null;
+                coefficient = scale;
+                under = inside;
+            }
+
+            if (rational is not { } a || coefficient is not { } b || under is not { } c)
+                return null;
+            if (a.IsNegative)
+                return null;
+
+            var discriminant = a.Multiply(a).Subtract(b.Multiply(b).Multiply(c));
+            if (ExactSquareRoot(discriminant) is not { } root)
+                return null;
+
+            var two = ERational.FromInt32(2);
+            var x = a.Add(root).Divide(two);
+            var y = a.Subtract(root).Divide(two);
+
+            // Nothing was nested to begin with if the inner root is a square, and this would
+            // then compete with `ReduceRadical` over the same expression rather than answering
+            // a question it left.
+            if (ExactSquareRoot(c) is not null)
+                return null;
+
+            Entity first = MathS.Sqrt(Rational.Create(x)).InnerSimplified;
+            Entity second = MathS.Sqrt(Rational.Create(y)).InnerSimplified;
+            return b.IsNegative ? first - second : first + second;
+        }
+
+        /// <summary>
+        /// A term of the form <c>k * sqrt(m)</c> with both rational, as its two parts.
+        /// <c>sqrt(6)</c> is read with a <c>k</c> of one.
+        /// </summary>
+        /// <remarks>
+        /// <b>Any half-integer exponent counts, not only one half.</b> The rules that run
+        /// alongside this one gather <c>2 * sqrt(2)</c> into <c>2 ^ (3/2)</c>, so by the time a
+        /// radicand reaches here its root has usually been folded into its coefficient — and a
+        /// reader that insists on a written <c>sqrt</c> sees <c>3 + 2 ^ (3/2)</c> and declines a
+        /// radicand it can perfectly well denest. <c>m ^ (p/2)</c> for odd <c>p</c> is
+        /// <c>m ^ ((p - 1) / 2) * sqrt(m)</c>, which is the same two parts; an even <c>p</c> is
+        /// not a root at all and is read as an ordinary rational factor by the case below.
+        /// </remarks>
+        private static bool TryReadRootTerm(Entity term, out ERational scale, out ERational inside)
+        {
+            scale = ERational.One;
+            inside = ERational.Zero;
+            var seenRoot = false;
+            foreach (var factor in Mulf.LinearChildren(term))
+                switch (factor)
+                {
+                    case Powf(var under, Rational exponent)
+                        when exponent.ERational.Denominator.Equals(EInteger.FromInt32(2))
+                            && under.Evaled is Rational { ERational.Sign: > 0 } radicand:
+                        if (seenRoot)
+                            return false;
+                        seenRoot = true;
+                        inside = radicand.ERational;
+                        // p/2 with p odd, the denominator being two in lowest terms. The whole
+                        // part comes out as a factor and the half stays under the root.
+                        var half = exponent.ERational.Numerator
+                            .Subtract(EInteger.One).Divide(EInteger.FromInt32(2));
+                        scale = scale.Multiply(Pow(radicand.ERational, half));
+                        break;
+                    case var other when other.Evaled is Rational multiplier:
+                        scale = scale.Multiply(multiplier.ERational);
+                        break;
+                    default:
+                        return false;
+                }
+            return seenRoot;
+        }
+
+        /// <summary>A rational raised to a whole power, negative exponents included.</summary>
+        private static ERational Pow(ERational value, EInteger exponent)
+        {
+            if (exponent.IsZero)
+                return ERational.One;
+            var magnitude = exponent.Abs().ToInt32Checked();
+            var result = ERational.One;
+            for (var i = 0; i < magnitude; i++)
+                result = result.Multiply(value);
+            return exponent.Sign < 0 ? ERational.One.Divide(result) : result;
         }
     }
 }

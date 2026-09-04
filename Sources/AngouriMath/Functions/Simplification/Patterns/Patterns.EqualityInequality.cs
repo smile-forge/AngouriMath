@@ -6,6 +6,8 @@
 //
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using static AngouriMath.Entity;
 using static AngouriMath.Entity.Boolean;
 using static Antlr4.Runtime.Atn.SemanticContext;
@@ -96,17 +98,85 @@ namespace AngouriMath.Functions
         private static Entity BothHold(Entity left, Entity right)
             => left == True ? right : right == True ? left : left & right;
 
+        /// <summary>
+        /// The predicates the rules key on, named so that <c>MatchedRules.InequalityEquality</c>
+        /// asks the same questions this <c>switch</c> asks rather than restating them. Where a
+        /// condition is about a branch or an ordering, two copies of it is how the two come to
+        /// disagree.
+        /// </summary>
+        internal static bool IsZeroReal(Entity entity) => IsZero(entity);
+
+        /// <inheritdoc cref="IsZeroReal"/>
+        internal static bool IsRealAbove(Entity entity, int bound) => bound == 0 && IsRealPositive(entity);
+
+        /// <inheritdoc cref="IsZeroReal"/>
+        internal static bool IsRealBelow(Entity entity, int bound) => bound == 0 && IsRealNegative(entity);
+
+        /// <summary>Whether two comparisons are about the same pair of operands, in the same order.</summary>
+        internal static bool SameOperands(Entity left, Entity right)
+            => left is ComparisonSign && right is ComparisonSign
+               && left.DirectChildren[0] == right.DirectChildren[0]
+               && left.DirectChildren[1] == right.DirectChildren[1];
+
+        /// <inheritdoc cref="SameOperands"/>
+        internal static bool HaveOppositeSigns(Entity left, Entity right)
+            => OppositeSigns((ComparisonSign)left, (ComparisonSign)right);
+
+        /// <inheritdoc cref="SameOperands"/>
+        internal static bool HaveExhaustiveSigns(Entity left, Entity right)
+            => ExhaustiveSigns((ComparisonSign)left, (ComparisonSign)right);
+
+        /// <summary>The <see cref="OrderedCondition"/> of one operand of a comparison, by index.</summary>
+        internal static Entity OrderedConditionOf(Entity comparison, int operand)
+            => OrderedCondition(comparison.DirectChildren[operand]);
+
+        /// <inheritdoc cref="OrderedConditionOf"/>
+        internal static Entity OrderedConditionFor(Entity entity) => OrderedCondition(entity);
+
+        /// <summary>
+        /// Whether pushing a <c>not</c> through this conjunction or disjunction leaves the
+        /// expression no more complex: at most one operand may be something other than a
+        /// comparison, since only a comparison absorbs the negation into itself.
+        /// </summary>
+        /// <remarks>
+        /// <c>Notf(Equalsf)</c> has the same complexity as <c>Equalsf</c> in the cost model, so a
+        /// negation counts as a comparison here.
+        /// </remarks>
+        internal static bool MayPushNotInside(IEnumerable<Entity> operands, bool insideConjunction)
+            => operands.Count(one => one is not ComparisonSign and not Notf
+                                     && (insideConjunction ? one is not Orf : one is not Andf)) <= 1;
+
+        /// <summary>
+        /// De Morgan: the negation of each operand, joined by the dual connective. Written once
+        /// and asked by both the <c>switch</c> and <c>MatchedRules.InequalityEquality</c>, because
+        /// it is a fold over a chain of any length rather than a shape, and a pattern says shapes.
+        /// </summary>
+        internal static Entity PushNotInside(IEnumerable<Entity> operands, bool disjoin)
+            => operands
+                .Select(one => InequalityEqualityRules(one switch { Notf(var inner) => inner, var whole => new Notf(whole) }))
+                .Aggregate((left, right) => disjoin ? left | right : left & right);
+
         [AddressableRules]
         internal static Entity InequalityEqualityRules(Entity x) => x switch
         {
+            // `a < b or a = b` is `a <= b`, and the four arms below it are the same law with the
+            // comparison written the other way round -- so they answer the other way round too.
+            // `b < a or a = b` is `a >= b`, not `a <= b`: at a = 1, b = 2 the disjunction is
+            // False and `a <= b` is True. Four of these eight carried their neighbour's answer.
+            //
+            // They are only reachable with both operands symbolic. With a number on one side,
+            // the `Lessf(var @const, ...)` arm further down rewrites `2 < x` to `x > 2` earlier
+            // in the same pass, so the disjunction is always looked at with both halves written
+            // the same way round and one of the four correct arms matches.
+            // https://github.com/asc-community/AngouriMath/issues/1077
             Orf(Lessf(var any1, var any2), Equalsf(var any1a, var any2a)) when any1 == any1a && any2 == any2a => any1 <= any2,
-            Orf(Lessf(var any2, var any1), Equalsf(var any1a, var any2a)) when any1 == any1a && any2 == any2a => any1 <= any2,
+            Orf(Lessf(var any2, var any1), Equalsf(var any1a, var any2a)) when any1 == any1a && any2 == any2a => any1 >= any2,
             Orf(Greaterf(var any1, var any2), Equalsf(var any1a, var any2a)) when any1 == any1a && any2 == any2a => any1 >= any2,
-            Orf(Greaterf(var any2, var any1), Equalsf(var any1a, var any2a)) when any1 == any1a && any2 == any2a => any1 >= any2,
+            Orf(Greaterf(var any2, var any1), Equalsf(var any1a, var any2a)) when any1 == any1a && any2 == any2a => any1 <= any2,
             Orf(Equalsf(var any1a, var any2a), Lessf(var any1, var any2)) when any1 == any1a && any2 == any2a => any1 <= any2,
-            Orf(Equalsf(var any1a, var any2a), Lessf(var any2, var any1)) when any1 == any1a && any2 == any2a => any1 <= any2,
+            Orf(Equalsf(var any1a, var any2a), Lessf(var any2, var any1)) when any1 == any1a && any2 == any2a => any1 >= any2,
             Orf(Equalsf(var any1a, var any2a), Greaterf(var any1, var any2)) when any1 == any1a && any2 == any2a => any1 >= any2,
-            Orf(Equalsf(var any1a, var any2a), Greaterf(var any2, var any1)) when any1 == any1a && any2 == any2a => any1 >= any2,
+            Orf(Equalsf(var any1a, var any2a), Greaterf(var any2, var any1)) when any1 == any1a && any2 == any2a => any1 <= any2,
 
             Notf(Greaterf(var any1, var any2)) => any1 <= any2,
             Notf(Lessf(var any1, var any2)) => any1 >= any2,
@@ -116,10 +186,10 @@ namespace AngouriMath.Functions
             // For complexity to not increase, maximum one AND/OR component can be something other than a comparison operator to propagate NOT into.
             // e.g. not (a > b and b = c) becomes (a <= b or not b = c)
             // Note that Notf(Equalsf) has the same complexity as Equalsf in ComplexityCriteria, so it can be treated as a comparison operator here.
-            Notf(Andf a) when Andf.LinearChildren(a).Count(n => n is not (ComparisonSign or Notf or Orf)) <= 1 =>
-                Andf.LinearChildren(a).Select(e => InequalityEqualityRules(e switch { Notf(var n) => n, var n => new Notf(n) })).Aggregate((a, b) => a | b),
-            Notf(Orf a) when Orf.LinearChildren(a).Count(n => n is not (ComparisonSign or Notf or Andf)) <= 1 =>
-                Orf.LinearChildren(a).Select(e => InequalityEqualityRules(e switch { Notf(var n) => n, var n => new Notf(n) })).Aggregate((a, b) => a & b),
+            Notf(Andf a) when MayPushNotInside(Andf.LinearChildren(a), insideConjunction: true)
+                => PushNotInside(Andf.LinearChildren(a), disjoin: true),
+            Notf(Orf a) when MayPushNotInside(Orf.LinearChildren(a), insideConjunction: false)
+                => PushNotInside(Orf.LinearChildren(a), disjoin: false),
 
             Impliesf(Andf(Greaterf(var any1, var any2), Greaterf(var any2a, var any3)), Greaterf(var any1a, var any3a))
                 when any1 == any1a && any2 == any2a && any3 == any3a => True.Provided(any1.DomainCondition).Provided(any2.DomainCondition).Provided(any3.DomainCondition),
@@ -205,7 +275,17 @@ namespace AngouriMath.Functions
             LessOrEqualf   (Divf(var any1, var rePo), var zeroEnt) when IsRealNegative(rePo) && IsZero(zeroEnt) => any1 >= Integer.Zero,
 
             // a! = 0
-            Equalsf(Factorialf({ DomainCondition: var condition }), var zeroEnt) when IsZero(zeroEnt) => False.Provided(condition),
+            // A factorial is never zero *where it is defined*, and at a negative integer it is
+            // not: `(-1)!` is a pole, so `(-1)! = 0` is NaN rather than False. The condition owed
+            // is therefore the factorial's own -- `x in RR and (x >= 0 or not x in ZZ)`.
+            //
+            // What was written was `Factorialf({ DomainCondition: var condition })`, a property
+            // pattern on the factorial's *argument*. For a bare variable that condition is True,
+            // and `Provided` drops a True, so `x! = 0` went out as an unconditioned False and
+            // answered a question the original declines.
+            // https://github.com/asc-community/AngouriMath/issues/1081
+            Equalsf(Factorialf factorial, var zeroEnt) when IsZero(zeroEnt)
+                => False.Provided(factorial.DomainCondition),
 
             // The DomainCondition is about singularities and says nothing about where the
             // ordering is defined, so both conditions are needed: `x < x` is False on the real

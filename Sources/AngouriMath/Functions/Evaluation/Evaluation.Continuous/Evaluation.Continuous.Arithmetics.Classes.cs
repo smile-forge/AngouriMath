@@ -13,6 +13,43 @@ namespace AngouriMath
     partial record Entity
     {
         /// <summary>
+        /// <paramref name="interval"/> scaled by <paramref name="factor"/>, or
+        /// <see langword="null"/> where the factor's sign is not known.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Scaling is monotone in the factor's sign and in nothing else, so this is the whole of
+        /// it: a positive factor carries both ends where they were, and a negative one
+        /// <b>reflects the interval</b> — the ends swap, and their openness swaps with them,
+        /// exactly as subtracting an interval does. <c>(0; 1] * -2</c> is <c>[-2; 0)</c>: the
+        /// included 1 becomes the included lower end -2, and the excluded 0 becomes the excluded
+        /// upper end 0.
+        /// </para>
+        /// <para>
+        /// <b>An unknown sign is answered by not answering.</b> <c>(0; 1) * k</c> for a symbolic
+        /// <c>k</c> is one interval when <c>k</c> is positive and the reflected one when it is
+        /// negative, and picking either would be choosing which. It is left alone, which is what
+        /// an unevaluated node means.
+        /// </para>
+        /// <para>
+        /// Zero never reaches here: <c>Mulf</c> answers a multiplication by zero before this is
+        /// consulted, and gives the number <c>0</c> rather than the set <c>{ 0 }</c>. That is
+        /// older than this and is left as it is — the arm it comes from is over every
+        /// <see cref="Entity"/> and not only intervals.
+        /// </para>
+        /// </remarks>
+        private static Entity? ScaledInterval(Interval interval, Entity factor, bool isExact)
+            => factor.Evaled is Real { IsFinite: true } real && !real.IsZero
+                ? real.IsPositive
+                    ? interval.New(
+                        (interval.Left * factor).InnerSimplified(isExact), interval.LeftClosed,
+                        (interval.Right * factor).InnerSimplified(isExact), interval.RightClosed)
+                    : interval.New(
+                        (interval.Right * factor).InnerSimplified(isExact), interval.RightClosed,
+                        (interval.Left * factor).InnerSimplified(isExact), interval.LeftClosed)
+                : null;
+
+        /// <summary>
         /// The value of <paramref name="expr"/> where it has one, with the condition it holds
         /// under, or <see langword="null"/> where there is no value to read.
         /// </summary>
@@ -72,7 +109,15 @@ namespace AngouriMath
                         (var n1, Integer(0)) => n1,
                         (Integer(0), var n2) => -n2,
                         (Interval inter, var n2) when n2 is not Set => inter.New((inter.Left - n2).InnerSimplified(isExact), (inter.Right - n2).InnerSimplified(isExact)),
-                        (var n2, Interval inter) when n2 is not Set => inter.New((n2 - inter.Left).InnerSimplified(isExact), (n2 - inter.Right).InnerSimplified(isExact)),
+                        // Subtracting an interval turns it round, so the ends swap and their
+                        // openness swaps with them. `5 - (0; 1]` is `[4; 5)`: the excluded 1
+                        // becomes the excluded lower end 4, and the included 0 becomes the
+                        // included upper end 5. Written as `New(n2 - Left, n2 - Right)` it came
+                        // back as `(5; 4]` -- an interval whose left end is above its right, which
+                        // is empty, so `4.5 in (5 - (0; 1))` answered False.
+                        (var n2, Interval inter) when n2 is not Set => inter.New(
+                            (n2 - inter.Right).InnerSimplified(isExact), inter.RightClosed,
+                            (n2 - inter.Left).InnerSimplified(isExact), inter.LeftClosed),
                         _ => null
                     },
                     (@this, a, b) => ((Minusf)@this).New(a, b), isExact);
@@ -96,6 +141,10 @@ namespace AngouriMath
                         (var n1, Integer(1)) => n1,
                         (Integer(1), var n2) => n2,
                         (var n1, var n2) when n1 == n2 => new Powf(n1, 2).InnerSimplified(isExact),
+                        // After the zero arms above, which answer a multiplication by zero for
+                        // every Entity and not only for an interval.
+                        (Interval inter, var n2) when n2 is not Set => ScaledInterval(inter, n2, isExact),
+                        (var n2, Interval inter) when n2 is not Set => ScaledInterval(inter, n2, isExact),
                         _ => null
                     },
                     (@this, a, b) => ((Mulf)@this).New(a, b), isExact);
@@ -124,6 +173,12 @@ namespace AngouriMath
                     (var n1, Powf(Rational radicand, Rational exponent)) when
                         RootExtraction.PullOutOfDenominator(radicand, exponent) is { } rationalized
                         => (n1 * rationalized).InnerSimplified(isExact),
+                    // An interval over a constant is that constant's reciprocal scaling it. Only
+                    // this direction: a constant over an interval that straddles zero is two
+                    // unbounded pieces rather than one interval, so it is not an Interval at all
+                    // and is left alone rather than answered wrongly.
+                    (Interval inter, var n2) when n2 is not Set
+                        => ScaledInterval(inter, (1 / n2).InnerSimplified(isExact), isExact),
                     _ => null
                 },
                 (@this, a, b) => ((Divf)@this).New(a, b), isExact);
@@ -168,8 +223,26 @@ namespace AngouriMath
             // Power is undefined in two cases:
             // - 0^0 is indeterminate
             // - 0^(negative) is undefined (division by zero)
-            private protected override Entity IntrinsicCondition => 
-                (!Base.EqualTo(0) | Exponent > 0);
+            //
+            // And over the reals there is a third, which is the whole of what `sqrt` is: an even
+            // root of a negative number is not real. `x ^ (1/2)` needs `x >= 0` and `x ^ (1/3)`
+            // needs nothing, so the exponent's *denominator* decides it and only a literal
+            // rational has one to read. A symbolic exponent is left with the condition above
+            // rather than given a guess: too strict is a wrong answer here, since this is what a
+            // rewrite consults before firing.
+            // https://github.com/asc-community/AngouriMath/issues/721
+            private protected override Entity IntrinsicCondition =>
+                Codomain < Domain.Complex && IsEvenRoot
+                ? Base >= 0 & (!Base.EqualTo(0) | Exponent > 0)
+                : (!Base.EqualTo(0) | Exponent > 0);
+
+            /// <summary>
+            /// Whether the exponent is a literal rational whose denominator is even — the case
+            /// where a negative base leaves the real line.
+            /// </summary>
+            private bool IsEvenRoot
+                => Exponent is Rational and not Integer and Rational ratio
+                   && ratio.ERational.Denominator.Remainder(2).IsZero;
             
             private static bool TryPower(Matrix m, int exp, out Entity res)
             {

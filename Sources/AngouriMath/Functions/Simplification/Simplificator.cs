@@ -302,7 +302,17 @@ namespace AngouriMath.Functions
                 var expandMark = recording?.Mark() ?? 0;
                 AddHistory(Noted(recording, res, res.Expand(), nameof(Entity.Expand), expandMark).Simplify(-level));
                 var factorizeMark = recording?.Mark() ?? 0;
-                AddHistory(Noted(recording, res, res.Factorize(), nameof(Entity.Factorize), factorizeMark).Simplify(-level));
+                // The **rule-based** factorisation, not `Entity.Factorize` -- which now also asks
+                // the polynomial layer, and whose answers must not become candidates here. The
+                // cost model prefers the expanded form (`x ^ 6 - 1` rates 12 expanded against 58
+                // factored), so a factored candidate wins only where the metric is closest, and
+                // those are exactly the places a factored answer is least wanted: `x^3/3 + x^2/2`
+                // becomes `(3 + 2 * x) * x ^ 2 / 6`, an antiderivative in a form no one writes.
+                // Offering the layer here is #746 tier 2's pluggable cost model, not this.
+                // https://github.com/asc-community/AngouriMath/issues/1018
+                AddHistory(Noted(recording, res,
+                    Transformation.RuleBasedFactorizationAtLevel(2).ApplyOrKeep(res),
+                    nameof(Entity.Factorize), factorizeMark).Simplify(-level));
 
                 // A multiple angle written out is worth having only where the pieces then
                 // cancel, so it has to be simplified in full before the metric can be
@@ -388,8 +398,55 @@ namespace AngouriMath.Functions
             return leftCon & rightCon;
         }
 
+        /// <summary>
+        /// <paramref name="left"/> exceeds <paramref name="right"/>, stated as a comparison of
+        /// their difference against zero — which is the form the inequality rules can decide.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <see cref="SimplifyChildren"/> alone is not enough to reach that form. It simplifies
+        /// the operands and leaves the sum standing, so <c>a - a / 3</c> comes back as
+        /// <c>a + -a / 3</c> — two terms in one variable, which no rule about a sign can read.
+        /// <see cref="Transformation.RationalCanonicalization"/> collects them into
+        /// <c>2/3 * a</c>, and a rational multiple of something is positive exactly when that
+        /// something is, so <c>a in (a / 3; 3 * a)</c> is <c>a &gt; 0</c>.
+        /// </para>
+        /// <para>
+        /// It was <c>a in (a / 2; 2 * a)</c> alone that answered before, and by coincidence
+        /// rather than by this route: nothing collected the terms, and the answer came out of
+        /// <see cref="Entity.Simplify(int)"/>'s candidate search happening to reach it for that
+        /// one denominator. Three, four, five and six were all left as written.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1056">#1056</a>
+        /// </para>
+        /// <para>
+        /// Then the comparison itself is normalised, and that is what makes the answer reachable
+        /// rather than merely correct. <c>Simplify</c> prunes a candidate by
+        /// <c>SimplifiedRate</c> at each step, and <c>2/3 * a &gt; 0 and 2 * a &gt; 0</c> rates 26
+        /// where the membership it came from rates 25 — one point worse, so it was discarded
+        /// before anything could reduce it to <c>a &gt; 0</c>, which rates 8. The <c>n = 2</c> case
+        /// answered only because <c>1/2 * a &gt; 0 and a &gt; 0</c> happens to rate 24. Dividing
+        /// out the positive factor here, with the rule set that already knows how, means the
+        /// candidate is born at its best rate instead of having to survive on the way there.
+        /// </para>
+        /// <para>
+        /// Two named transformations rather than a call back into <see cref="Entity.Simplify(int)"/>,
+        /// deliberately: this runs inside a rewrite rule that <c>Simplify</c> itself applies, and
+        /// the full simplifier here would be a cycle through the interval rule rather than a
+        /// deeper answer.
+        /// </para>
+        /// </remarks>
         internal static Entity ConditionallyGreater(Entity left, Entity right)
-            => SimplifyChildren(left - right) > 0;
+            => decideSign.ApplyOrKeep(
+                Transformation.RationalCanonicalization.ApplyOrKeep(SimplifyChildren(left - right)) > 0);
+
+        /// <summary>
+        /// Divides a decidably-signed numeric factor out of a comparison with zero, which is what
+        /// takes <c>2/3 * a &gt; 0</c> to <c>a &gt; 0</c>. Held as a field so the chain is built
+        /// once rather than per interval end.
+        /// </summary>
+        [ConstantField]
+        private static readonly Transformation decideSign =
+            Transformation.Rewriting(RewriteRules.InequalityEquality);
 
         /// <summary>
         /// Divides the given expression by the divisor.

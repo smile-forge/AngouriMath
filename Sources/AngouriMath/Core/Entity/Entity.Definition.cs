@@ -132,6 +132,30 @@ namespace AngouriMath
         public IReadOnlyList<Entity> DirectChildren => directChildren.GetValue(static @this => @this.InitDirectChildren(), this);
         private LazyPropertyA<IReadOnlyList<Entity>> directChildren;
 
+        /// <summary>
+        /// The parts a <see cref="Core.Transformations.Matching.MatchPattern"/> takes this node
+        /// apart into. <see cref="DirectChildren"/> for every node but one.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The two differ only where a node's traversal shape is not its written shape, and
+        /// <see cref="Set.ConditionalSet"/> is the only node where that is so — measured across
+        /// every binder the language has. A summation, a product, an integral, a derivative, a
+        /// limit and a lambda all publish the name they bind as an ordinary child, un-renamed, so
+        /// a pattern can already name it and a repeated hole already says "the same variable". A
+        /// set builder publishes its predicate alone, with the bound name replaced by a
+        /// placeholder invented per traversal, so a pattern could reach neither.
+        /// <a href="https://github.com/asc-community/AngouriMath/issues/1074">#1074</a>
+        /// </para>
+        /// <para>
+        /// This is the same split <see cref="VarsAndConsts"/> and <see cref="FreeVariables"/>
+        /// already make, and for the same reason: what a set builder <em>is</em> is read off its
+        /// declared parts, and what it publishes for traversal is a capture-avoiding rewriting of
+        /// them. Anything asking a question about the written expression has to ask the first.
+        /// </para>
+        /// </remarks>
+        internal virtual IReadOnlyList<Entity> MatchableChildren => DirectChildren;
+
         /// <remarks>A depth-first enumeration is required by
         /// <see cref="AngouriMath.Functions.TreeAnalyzer.GetMinimumSubtree"/></remarks>
         /// <summary>
@@ -616,12 +640,54 @@ namespace AngouriMath
                         // https://github.com/asc-community/AngouriMath/issues/989
                         Set.ConditionalSet(var bound, var predicate)
                             => predicate.FreeVariables.Where(v => !bound.VarsAndConsts.Contains(v)).ToList(),
+                        // A summation and a product bind their index, so sum(k, k, 1, n) is a
+                        // function of n alone. The index is bound over the bounds as well as the
+                        // summand, which is what Binding says of itself: the name a binder is
+                        // handed is honoured throughout it, through the summand and the bounds.
+                        // https://github.com/asc-community/AngouriMath/issues/1019
+                        Summationf(var body, var index, var from, var to)
+                            => BoundBy(index, body, from, to),
+                        Productf(var body, var index, var from, var to)
+                            => BoundBy(index, body, from, to),
+                        // An integral binds its variable only when it has limits to bind it
+                        // between. The indefinite one does not: the antiderivative of t * b over
+                        // t is b * t ^ 2 / 2 + C, which is still a function of t. Nor does a
+                        // derivative -- d/dt denotes a function of t. Their variable stays free
+                        // on purpose, and a sweep that "fixes" that makes them wrong.
+                        Integralf { Range: { } limits } integral
+                            => BoundBy(integral.Var, integral.Expression, limits.from, limits.to),
+                        // A limit binds its variable always, and this is the one calculus
+                        // operator of the three for which that is unconditional. The reason the
+                        // two above are conditional does not apply to it: an antiderivative and a
+                        // derivative are still functions of the variable, and a limit never is.
+                        // lim(k, k, 0) is 0, and no limit's value depends on the name it
+                        // approaches along -- the destination is where the dependence goes.
+                        // https://github.com/asc-community/AngouriMath/issues/989
+                        Limitf limit
+                            => BoundBy(limit.Var, limit.Expression, limit.Destination),
                         _ => new HashSet<Variable>(@this.DirectChildren.SelectMany(c => c.FreeVariables))
                     }
                 ,
                 this
             );
         private LazyPropertyA<IReadOnlyCollection<Variable>> freeVariables;
+
+        /// <summary>
+        /// The free variables of <paramref name="parts"/> taken together, less whatever
+        /// <paramref name="binder"/> binds. <paramref name="binder"/> is an <see cref="Entity"/>
+        /// rather than a <see cref="Variable"/> because a binder's name position accepts one and
+        /// the parser is what settles which name it is.
+        /// </summary>
+        private static IReadOnlyCollection<Variable> BoundBy(Entity binder, params Entity[] parts)
+        {
+            var bound = binder.VarsAndConsts;
+            var free = new HashSet<Variable>();
+            foreach (var part in parts)
+                foreach (var v in part.FreeVariables)
+                    if (!bound.Contains(v))
+                        free.Add(v);
+            return free;
+        }
 
         /// <summary>Checks if <paramref name="x"/> is a subnode inside this <see cref="Entity"/> tree.
         /// Optimized for <see cref="Variable"/>.</summary>
@@ -660,7 +726,38 @@ namespace AngouriMath
         /// <see cref="MathS.Settings.ComplexityCriteria"/> which can be changed by user.
         /// See <see cref="MathS.Settings.ComplexityCriteria"/> for more details.
         /// </summary>
-        public double SimplifiedRate => simplifiedRate.GetValue(MathS.Settings.ComplexityCriteria.Value, this);
+        /// <remarks>
+        /// <para>
+        /// <b>Cached for the default criteria only, and computed afresh for any other.</b> The
+        /// cache is one slot per <see cref="Entity"/> instance and the criteria is an ambient
+        /// setting, so the two do not agree about what the cached number is a rate <i>of</i>: a
+        /// rate computed under one cost model was answered with under the next, and
+        /// <c>Simplificator.PickSimplest</c> compares candidates by this property — so it would
+        /// weigh one model's cached rate against another's freshly computed one and choose on the
+        /// strength of it, with nothing anywhere to say the comparison was meaningless.
+        /// </para>
+        /// <para>
+        /// The unset path keeps the cache, which is what nearly every call takes and what the
+        /// slot was there for. A criteria anybody has scoped computes without caching, so it can
+        /// neither be answered with somebody else's number nor leave one behind for them. The
+        /// test is <c>IsOverriden</c> — the setting's own "nobody expressed an opinion", which is
+        /// what <c>BudgetLedger.For</c> already asks of <see cref="MathS.Settings.Budget"/> — and
+        /// not an equality against the default function: it is one ambient read rather than a
+        /// read plus a delegate comparison, on a property <c>Simplificator.PickSimplest</c> reads
+        /// once per candidate. A caller who scopes the default function explicitly gets the same
+        /// number by the uncached route.
+        /// </para>
+        /// </remarks>
+        public double SimplifiedRate
+        {
+            get
+            {
+                var criteria = MathS.Settings.ComplexityCriteria;
+                return criteria.IsOverriden
+                    ? criteria.Value(this)
+                    : simplifiedRate.GetValue(criteria.Default, this);
+            }
+        }
         private LazyPropertyA<double> simplifiedRate;
 
         /// <summary>Checks whether the given expression contains variable</summary>

@@ -10,7 +10,9 @@ using System.Collections.Generic;
 using System.Linq;
 using AngouriMath;
 using AngouriMath.Core;
+using AngouriMath.Core.Budgets;
 using AngouriMath.Core.Transformations;
+using AngouriMath.Core.Transformations.Matching;
 using Xunit;
 
 namespace AngouriMath.Tests.Core.Transformations
@@ -103,8 +105,10 @@ namespace AngouriMath.Tests.Core.Transformations
             var factorThenExpand = Transformation.Factorization.Then(Transformation.Expansion);
 
             // Not an inverse pair, and the names say which way round each one is.
-            Assert.Equal("expand[2] then factorize", Shorten(expandThenFactor.Name));
-            Assert.Equal("factorize then expand[2]", Shorten(factorThenExpand.Name));
+            Assert.Equal("expand[2] then factorize then polynomial-factorization then numeric-content",
+                Shorten(expandThenFactor.Name));
+            Assert.Equal("factorize then polynomial-factorization then numeric-content then expand[2]",
+                Shorten(factorThenExpand.Name));
 
             static string Shorten(string name)
                 => name.Replace("rewrite[PerfectSquare] then rewrite[Factorization] then inner-simplify x2", "factorize");
@@ -544,6 +548,396 @@ namespace AngouriMath.Tests.Core.Transformations
             Assert.DoesNotContain(
                 result.Output!.Nodes,
                 node => node is Entity.Divf(_, var denominator) && denominator.Nodes.Any(n => n is Entity.Powf));
+        }
+
+        [Fact]
+        public void SimplificationAtLevelWithACostModelConsultsThatModelRatherThanTheAmbientDefault()
+        {
+            var calls = 0;
+            var spy = new CostModel("spy", "counts how many candidates it was asked to rate", e =>
+            {
+                calls++;
+                return CostModel.Default.Cost(e);
+            });
+
+            Transformation.SimplificationAtLevel(2, spy).Apply(Parse("(x + 1) ^ 2"));
+
+            Assert.True(calls > 0);
+        }
+
+        [Fact]
+        public void SimplificationAtLevelWithACostModelDoesNotLeakTheOverrideAfterwards()
+        {
+            Assert.False(MathS.Settings.ComplexityCriteria.IsOverriden);
+
+            Transformation.SimplificationAtLevel(2, CostModel.FewestDivisions).Apply(Parse("(x + 1) ^ 2"));
+
+            Assert.False(MathS.Settings.ComplexityCriteria.IsOverriden);
+        }
+
+        [Fact]
+        public void SimplificationAtLevelWithTheDefaultCostModelMatchesTheOverloadWithout()
+        {
+            var withoutModel = Transformation.SimplificationAtLevel(2).Apply(Parse("sin(x) / tan(x) + a / (b / c)"));
+            var withDefaultModel = Transformation.SimplificationAtLevel(2, CostModel.Default)
+                .Apply(Parse("sin(x) / tan(x) + a / (b / c)"));
+
+            Assert.Equal(withoutModel.Output, withDefaultModel.Output);
+        }
+
+        #endregion
+
+        #region Equality saturation
+
+        private static WorkBudget SmallSaturationBudget { get; }
+            = new() { Steps = 10_000, Time = TimeSpan.FromSeconds(5) };
+
+        [Fact]
+        public void EqualitySaturationReportsWhatItIsAndWhatItDid()
+        {
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+            var result = transformation.Apply(Parse("x + 0"));
+
+            Assert.True(result.Succeeded);
+            Assert.True(result.Changed);
+            Assert.Equal(TransformationRelation.Equivalence, result.Relation);
+            Assert.Equal(Soundness.SoundUnderAssumptions, result.Soundness);
+            Assert.Equal(Parse("x"), result.Output);
+        }
+
+        [Fact]
+        public void EqualitySaturationDeclinesToChangeAnExpressionAlreadyAtItsCheapest()
+        {
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+            var result = transformation.Apply(Parse("x"));
+
+            Assert.True(result.Succeeded);
+            Assert.False(result.Changed);
+        }
+
+        /// <summary>
+        /// <see cref="WorkBudget.Steps"/> charged the e-graph's node-count growth, and
+        /// <c>SafeRules</c> is by construction the rules whose
+        /// <see cref="RewriteRuleGrowth"/> does <i>not</i> expand -- so on ordinary input the
+        /// ledger was charged nothing at all, and a budget of zero steps ran the whole sweep to
+        /// saturation and then reported that it had <see cref="BudgetOutcome.Completed"/>.
+        /// Measured before the fix: three of five varied expressions reported exactly that.
+        /// A step here is what it is for Buchberger, FGLM and <c>MatchPattern</c> -- one unit of
+        /// work attempted -- not a node that happened to be created.
+        /// </summary>
+        [Theory]
+        [InlineData("(x + y) / (x - y) + (x - y) / (x + y)")]
+        [InlineData("(a + b + c + d) ^ 3")]
+        [InlineData("sqrt(2) / (sqrt(3) + sqrt(5)) + ln(a * b * c) + sin(x + y) * cos(x - y)")]
+        public void EqualitySaturationStopsWhenItHasNoStepsToSpend(string source)
+        {
+            var starved = new WorkBudget { Steps = 0, Time = TimeSpan.FromSeconds(30) };
+            var transformation = Transformation.EqualitySaturation(starved, CostModel.Default);
+
+            using var recording = BudgetRecording.Start();
+            transformation.Apply(Parse(source));
+
+            var outcome = recording.Outcomes.Single();
+            Assert.False(outcome.Completed);
+            Assert.Equal("steps", outcome.Reason);
+        }
+
+        /// <summary>
+        /// The other half of the same claim: a ceiling that is reached is a ceiling that was
+        /// counting, so what the ledger reports spent must not run away past what was allowed.
+        /// </summary>
+        [Theory]
+        [InlineData(10)]
+        [InlineData(50)]
+        [InlineData(200)]
+        public void EqualitySaturationSpendsNoMoreThanOneStepPastItsCeiling(int steps)
+        {
+            var budget = new WorkBudget { Steps = steps, Time = TimeSpan.FromSeconds(30) };
+            var transformation = Transformation.EqualitySaturation(budget, CostModel.Default);
+
+            using var recording = BudgetRecording.Start();
+            transformation.Apply(Parse("sqrt(2) / (sqrt(3) + sqrt(5)) + ln(a * b * c) + sin(x + y) * cos(x - y)"));
+
+            var outcome = recording.Outcomes.Single();
+            Assert.True(outcome.Steps <= steps + 1,
+                $"a ceiling of {steps} was overshot to {outcome.Steps}");
+        }
+
+        /// <summary>
+        /// <see cref="RewriteRecording"/> is the library's only "what rewrote this and why"
+        /// mechanism, and it is populated inside <see cref="RewriteRuleSet.ApplyOnce"/> --
+        /// which equality saturation does not go through, since it asks rules directly. A caller
+        /// who opened a recording therefore got a real rewrite with an empty derivation, and no
+        /// signal telling them introspection had missed it rather than found nothing.
+        /// </summary>
+        [Fact]
+        public void EqualitySaturationIsVisibleToARecording()
+        {
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+
+            using var recording = RewriteRecording.Start();
+            var result = transformation.Apply(Parse("x + 0"));
+
+            Assert.True(result.Changed);
+            var path = recording.PathFrom(result.Input, result.Output!);
+            Assert.NotNull(path);
+            Assert.Contains(path!.Steps, step => step.Name == transformation.Name);
+        }
+
+        /// <summary>
+        /// And it records nothing when it changed nothing, which is the convention every rule set
+        /// already follows -- a pass that did not fire is not a step.
+        /// </summary>
+        [Fact]
+        public void EqualitySaturationRecordsNothingWhenItChangesNothing()
+        {
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+
+            using var recording = RewriteRecording.Start();
+            var result = transformation.Apply(Parse("x"));
+
+            Assert.False(result.Changed);
+            Assert.Empty(recording.Steps);
+        }
+
+        /// <summary>
+        /// <see cref="MatchPattern.RequiredRootType"/> is a documented necessary condition on a
+        /// match, and the sweep did not consult it: every rule in <c>SafeRules</c> ran a full
+        /// pattern match against every class of every pass, and the large majority of those could
+        /// not have matched. Measured over four expressions, consulting it cuts match attempts by
+        /// about thirteen times — 1076 steps to 78 on the largest — with the same answer each time.
+        /// </summary>
+        /// <remarks>
+        /// Asserted against the rule count rather than against a recorded number, so that the
+        /// claim stays true as rules are added: saturating <c>x + 0</c> to its answer costs less
+        /// in total than one unfiltered pass over a single class would.
+        /// </remarks>
+        [Fact]
+        public void EqualitySaturationDoesNotAttemptEveryRuleOnEveryClass()
+        {
+            var generous = new WorkBudget { Steps = 10_000_000, Time = TimeSpan.FromSeconds(60) };
+            var transformation = Transformation.EqualitySaturation(generous, CostModel.Default);
+
+            using var recording = BudgetRecording.Start();
+            var result = transformation.Apply(Parse("x + 0"));
+
+            Assert.Equal(Parse("x"), result.Output);
+            var spent = recording.Outcomes.Single().Steps;
+            Assert.True(spent < Transformation.EqualitySaturationSafeRuleCount,
+                $"the whole saturation spent {spent} steps, which is not less than the "
+                + $"{Transformation.EqualitySaturationSafeRuleCount} one unfiltered pass over one "
+                + "class would cost -- the root-type filter is not being consulted");
+        }
+
+        [Fact]
+        public void EqualitySaturationNeverThrowsUnderAStarvedBudget()
+        {
+            var starved = new WorkBudget { Steps = 0, Time = TimeSpan.Zero };
+            var transformation = Transformation.EqualitySaturation(starved, CostModel.Default);
+
+            var result = transformation.Apply(Parse("(x + 1) * (x - 1)"));
+
+            // A budget with nothing to spend still has to answer with something -- the input
+            // itself, extracted from a graph that never got to fire a rule.
+            Assert.True(result.Succeeded);
+        }
+
+        /// <summary>
+        /// A pre-merge review found that the e-match branch in <c>ApplyCore</c> had no
+        /// <c>try</c>/<c>catch</c> around <c>TryEMatchApply</c>, unlike the fallback branch, which
+        /// wraps both <c>TryApply</c> and <c>AddEntity</c>. The review named a live example --
+        /// <c>power-of-a-power-multiplies-its-exponents</c> in <c>MatchedRules.cs</c>, whose
+        /// <c>when</c> reads <c>bound["c"] is Integer || bound["a"].Evaled is Real { IsPositive:
+        /// true }</c> on a witness <c>TryEMatchApply</c> extracts freely from the e-graph rather
+        /// than one the caller wrote.
+        /// </summary>
+        /// <remarks>
+        /// Tracing <c>MatchedRule.TryEMatchApply</c> and <c>EGraph.Extract</c> by hand first:
+        /// <c>Extract</c> already swallows a failing cost model itself
+        /// (<c>try { here = cost(built); } catch { continue; }</c>), and <c>Evaled</c> is
+        /// documented and implemented to be total (<c>Docs/Usage/Exceptions.md</c>: "<c>Evaled</c>
+        /// is the answer that does not throw"; <c>Andf</c>/<c>Orf</c>/<c>Xorf</c> all decline
+        /// rather than throw on a mistyped operand via <c>MixesANumberWithATruthValue</c>) -- so
+        /// this specific clause cannot actually be driven to throw with real data today. The one
+        /// call inside <c>TryEMatchApply</c> that is not guarded anywhere is <c>when</c> itself
+        /// (the <c>if (when is not null) { ... if (!when(forWhen)) continue; }</c> block), so a
+        /// rule whose condition throws on a shape it does not expect is the live hazard the review
+        /// was about. Reproduced below with a rule built the way this codebase's own
+        /// <c>MatchedRuleGrowthTest</c> already builds throwaway rules for a unit test, since the
+        /// real named rule's own condition cannot be forced to fail.
+        /// </remarks>
+        [Fact]
+        public void EqualitySaturationDeclinesRatherThanThrowsWhenAWhenConditionThrows()
+        {
+            var throwingRule = new MatchedRule(
+                "test-when-throws-on-a-shape-it-does-not-expect",
+                MatchPattern.Any("x"),
+                (Bindings b) => b["x"],
+                Soundness.Sound,
+                when: _ => throw new InvalidOperationException(
+                    "a when clause asked about a shape it did not expect"));
+            Assert.True(throwingRule.Left.CanEMatch);
+
+            var graph = new EGraph();
+            var root = graph.AddEntity(Parse("x + 1"));
+            graph.Rebuild();
+
+            // RED, absent a guard: nothing inside TryEMatchApply catches the `when` clause's own
+            // exception, so it escapes straight out.
+            Assert.Throws<InvalidOperationException>(
+                () => throwingRule.TryEMatchApply(graph, root, CostModel.Default.Cost, out _));
+
+            // GREEN: this is exactly the shape ApplyCore's e-match branch now uses -- the call
+            // declines the candidate instead of throwing.
+            bool matched;
+            try { matched = throwingRule.TryEMatchApply(graph, root, CostModel.Default.Cost, out _); }
+            catch { matched = false; }
+            Assert.False(matched);
+
+            // And insurance through the real production pipeline: the real registry's own
+            // like-shaped rule (the one I2 named), exercised via real e-matching over every
+            // corpus entry plus a nested power, puts its own `when` clause in front of an "a"
+            // witness which is not a positive real (a bare variable) -- the shape it does not
+            // expect. Nothing throws today (confirmed by hand: reverting ApplyCore's guard still
+            // leaves this loop green, because Evaled cannot actually be made to throw with real
+            // data -- see the remarks above), so this is a regression net against a *future*
+            // when clause that can, not a repro of a live crash.
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+            foreach (var row in Corpus)
+            {
+                var source = (string)row[0];
+                var exception = Record.Exception(() => transformation.Apply(Parse(source)));
+                Assert.Null(exception);
+            }
+            var nestedPowerException = Record.Exception(
+                () => transformation.Apply(Parse("(x ^ 2) ^ y")));
+            Assert.Null(nestedPowerException);
+        }
+
+        /// <summary>
+        /// A handful of real check points, substituted for every free variable at once. Not
+        /// <see cref="AngouriMath.Functions.ExpressionNumerical.AreEqual"/>'s own complex
+        /// check points: this transformation can reassociate a chain of divisions --
+        /// <c>a / b / c</c> to <c>a / (b * c)</c> -- and comparing the two chains' complex
+        /// floating-point evaluations by exact equality is comparing two different rounding
+        /// paths to the same value, not the value itself. <see cref="Entity.EqualsImprecisely"/>
+        /// is the tolerance this library already uses for exactly that comparison.
+        /// </summary>
+        private static readonly Entity[] RealCheckPoints = { 0.37, 1.91, -2.63, 5.2 };
+
+        [Theory]
+        [MemberData(nameof(Corpus))]
+        public void EqualitySaturationNeverChangesTheValueItClaimsToPreserve(string source)
+        {
+            var input = Parse(source);
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+            var output = transformation.Apply(input).OutputOrInput;
+
+            var vars = input.Vars.Concat(output.Vars).Distinct().ToList();
+            if (vars.Count == 0) return; // nothing to substitute; Changed already covers this shape
+            foreach (var point in RealCheckPoints)
+            {
+                var before = vars.Aggregate(input, (e, v) => e.Substitute(v, point));
+                var after = vars.Aggregate(output, (e, v) => e.Substitute(v, point));
+                Entity beforeEvaled, afterEvaled;
+                try { beforeEvaled = before.Evaled; afterEvaled = after.Evaled; }
+                catch { continue; } // a boolean/set-valued corpus entry: not this test's claim
+                Assert.True(beforeEvaled.EqualsImprecisely(afterEvaled),
+                    $"{source} at {point.Stringize()}: {beforeEvaled.Stringize()} became "
+                        + $"{afterEvaled.Stringize()} via {output.Stringize()}");
+            }
+        }
+
+        /// <summary>
+        /// A domain narrowed with <see cref="Entity.WithCodomain"/> survives the round trip
+        /// through the e-graph -- <c>sqrt(-1)</c> is <c>i</c> under the default codomain and
+        /// <see cref="MathS.NaN"/> restricted to the reals, so losing the annotation silently
+        /// changes which value the expression denotes. Caught in code review before this PR was
+        /// merged: <see cref="AngouriMath.Core.Transformations.EGraph.Extract"/> rebuilt every
+        /// node through a bare constructor with nothing to restore it.
+        /// </summary>
+        [Fact]
+        public void EqualitySaturationPreservesANarrowedCodomain()
+        {
+            var input = MathS.Sqrt(-1).WithCodomain(Domain.Real);
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+
+            var output = transformation.Apply(input).OutputOrInput;
+
+            Assert.Equal(Domain.Real, output.Codomain);
+            Assert.Equal(input.Evaled, output.Evaled);
+        }
+
+        /// <summary>
+        /// <c>ln</c>'s base is <see cref="Entity.Constant.EulerIntrinsic"/>, a distinct object
+        /// from the named constant <c>e</c> kept specifically so a binder over the name <c>e</c>
+        /// does not capture it. The e-graph keys a leaf by its printed form, which the two share,
+        /// so re-extracting used to silently substitute the named constant in its place -- a
+        /// change invisible to every equality check and only wrong at a binder. Caught in code
+        /// review before this PR was merged.
+        /// </summary>
+        [Fact]
+        public void EqualitySaturationPreservesEulerIntrinsicIdentity()
+        {
+            Entity input = MathS.Ln(MathS.Var("x"));
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+
+            var output = transformation.Apply(input).OutputOrInput;
+
+            Assert.True(output is Entity.Logf(var @base, _)
+                && ReferenceEquals(Entity.Constant.EulerIntrinsic, @base));
+        }
+
+        /// <summary>
+        /// A pre-merge review's rule-collapse finding, test half. The original version of this test used
+        /// <c>Parse("x + 0")</c>, which is vacuous: <c>EGraph.Add</c>'s neutral-fold collapses
+        /// <c>x + 0</c> into <c>x</c>'s class on insertion, before any rule -- e-matched or
+        /// otherwise -- is ever consulted, so the test passed even with <c>SafeRules</c> empty.
+        /// </summary>
+        /// <remarks>
+        /// <c>sin(arcsin(x)) -&gt; x</c> is <c>"a-sine-of-an-arcsine"</c> in
+        /// <c>MatchedRules.cs</c>: an unconditional
+        /// <see cref="Soundness.Sound"/> rule whose pattern
+        /// (<c>Node&lt;Sinf&gt;(Node&lt;Arcsinf&gt;(Any("a")))</c>) is built entirely from
+        /// <c>Node</c>/<c>Any</c> patterns, so it e-matches (per <c>NodePattern</c>'s whitelist-free
+        /// reach over the e-graph) and is not folded away by
+        /// <c>EGraph.Add</c>'s neutral-fold the way <c>x + 0</c> is -- so reaching it through
+        /// <c>EqualitySaturation</c> genuinely exercises the real e-match path this plan added,
+        /// rather than a rewrite the e-graph would have performed on insertion regardless of
+        /// which rules were ever offered to it.
+        /// </remarks>
+        [Fact]
+        public void EqualitySaturationReachesARuleTheOldRegistryProxyNeverExactlyClassified()
+        {
+            var transformation = Transformation.EqualitySaturation(SmallSaturationBudget, CostModel.Default);
+            var result = transformation.Apply(Parse("sin(arcsin(x))"));
+
+            Assert.True(result.Changed);
+            Assert.Equal(Parse("x"), result.Output);
+        }
+
+        /// <summary>
+        /// A pre-merge review's rule-collapse finding, measurement half: nothing measured or
+        /// asserted <c>SafeRules</c>' real size, which is how it collapsed to 24 -- and then, after
+        /// a growth-declaration batch, grew back to 43 -- with no test either time. This is the
+        /// ongoing measurement the spec asked for, not a one-time probe: kept as a <c>[Fact]</c> so
+        /// a future collapse fails a test rather than going unmeasured again.
+        /// </summary>
+        /// <remarks>
+        /// The floor is 38, not 43: a few below the real, measured count (see
+        /// <see cref="Transformation.EqualitySaturationSafeRuleCount"/>), so that ordinary future
+        /// rule-registry churn -- a rule renamed, reclassified, or folded into another -- does not
+        /// make this flaky, while a real collapse back toward the old all-<c>Unknown</c> state
+        /// (24, or worse, 0) still fails it well before it could reach 38.
+        /// </remarks>
+        [Fact]
+        public void SafeRulesHasAtLeastAFloor()
+        {
+            Assert.True(
+                Transformation.EqualitySaturationSafeRuleCount >= 38,
+                $"SafeRules has {Transformation.EqualitySaturationSafeRuleCount} rules, which is "
+                    + "below the floor of 38 -- this is the shape a pre-merge review warned about: "
+                    + "the rule population silently collapsing with nothing to catch it.");
         }
 
         #endregion

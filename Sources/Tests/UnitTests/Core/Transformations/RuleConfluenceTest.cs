@@ -38,6 +38,17 @@ namespace AngouriMath.Tests.Core.Transformations
     /// <b>A sample, not a proof.</b> Two arms that never overlap on the generated input say
     /// nothing either way, and are not recorded as agreeing.
     /// </para>
+    /// <para>
+    /// <b>And a shallower sample than it reads as.</b> The third level below is grown with unary
+    /// shapes only, so this corpus never builds a quotient of quotients or a product of quotients —
+    /// which is where a special rule and the general rule that would swallow it meet.
+    /// <c>RulePriorityTest</c> asks the same question of the same rules written as data, over a
+    /// corpus grown with binary shapes at every level, and finds <b>45</b> conflicts where this
+    /// finds three. It also names them as the rules they are between rather than as the indices
+    /// below, which is what the note on
+    /// <see cref="AConflictIsReportableAsThePatternsItIsBetween"/> asks for; a data rule has a name
+    /// and a <c>switch</c> arm does not.
+    /// </para>
     /// </remarks>
     [Trait("Area", "Core")]
     public sealed class RuleConfluenceTest
@@ -109,6 +120,22 @@ namespace AngouriMath.Tests.Core.Transformations
         }
 
         /// <summary>
+        /// How an arm is referred to: <b>by name where it has one</b>, and by its index where the
+        /// only name it has is its own rendered pattern.
+        /// </summary>
+        /// <remarks>
+        /// This is what the note on <see cref="AConflictIsReportableAsThePatternsItIsBetween"/>
+        /// asks for — "an index moves whenever somebody edits the <c>switch</c>, which is exactly
+        /// when this test fires" — and it became possible one set at a time, as the registry was
+        /// repointed at the rules it runs. It is not hypothetical: repointing <c>Power</c> moved
+        /// its arms from 35 to 31 and invalidated two recorded orderings that named nothing but
+        /// numbers. A set still described by <c>RuleRegistryGenerator</c> has no name to give, so
+        /// it keeps the index and will stop needing to when it is repointed.
+        /// </remarks>
+        private static string Ident(RewriteRuleSet set, int index)
+            => Explanation.IsProse(set.Rules[index].Name) ? set.Rules[index].Name : index.ToString();
+
+        /// <summary>
         /// Every pair of arms of one set observed to fire at the same node and disagree about the
         /// result, as <c>Set[earlier,later]</c>.
         /// </summary>
@@ -132,7 +159,7 @@ namespace AngouriMath.Tests.Core.Transformations
                             {
                                 if (i >= j || settled[i].Equals(settled[j]))
                                     continue;
-                                var key = $"{set.Name}[{i},{j}]";
+                                var key = $"{set.Name}[{Ident(set, i)},{Ident(set, j)}]";
                                 conflicts.Add(key);
                                 if (!examples.ContainsKey(key))
                                     examples[key] = $"{node.Stringize()} -> {settled[i].Stringize()} "
@@ -152,6 +179,15 @@ namespace AngouriMath.Tests.Core.Transformations
         /// way. They are recorded because that is a fact about the current arms and not a
         /// guarantee: an arm inserted above one of these changes an answer, and without this list
         /// nothing would notice.
+        /// <para/>
+        /// <b>All three name their arms now.</b> They read <c>Common[12,89]</c>,
+        /// <c>Power[18,19]</c> and <c>Power[6,19]</c> until each set was described by the rules it
+        /// runs rather than by the <c>switch</c> it had stopped running
+        /// (<a href="https://github.com/asc-community/AngouriMath/issues/825">#825</a>) — and
+        /// repointing <c>Power</c> moved its arms from 35 to 31 and invalidated two of them on the
+        /// spot, which is exactly the failure the note on
+        /// <see cref="AConflictIsReportableAsThePatternsItIsBetween"/> predicted and could not do
+        /// anything about while the only name an arm had was its own rendered pattern.
         /// </remarks>
         [Fact]
         public void OnlyTheRecordedArmOrderingsAreLoadBearing()
@@ -162,11 +198,11 @@ namespace AngouriMath.Tests.Core.Transformations
             {
                 // x * 1/2 -> 1/2 * x (the sort) rather than x / 2 (the quotient). Both settle to
                 // x / 2 once InnerSimplified has run.
-                "Common[12,89]",
+                "Common[a-variable-times-a-number-puts-the-number-first,a-reciprocal-rational-factor-is-a-division]",
                 // (-x) ^ (-1) -> -1 / x rather than 1 / (-x).
-                "Power[18,19]",
+                "Power[a-numeric-factor-comes-out-of-a-power-of-a-product,a-reciprocal-power-is-a-quotient]",
                 // (e ^ y) ^ (-1) -> e ^ (y * (-1)) rather than 1 / e ^ y.
-                "Power[6,19]",
+                "Power[a-power-of-a-power-multiplies-the-exponents,a-reciprocal-power-is-a-quotient]",
             };
 
             Assert.Equal(
@@ -190,11 +226,15 @@ namespace AngouriMath.Tests.Core.Transformations
             foreach (var conflict in conflicts)
             {
                 var name = conflict.Substring(0, conflict.IndexOf('['));
-                var indices = conflict.Substring(conflict.IndexOf('[') + 1).TrimEnd(']')
-                    .Split(',').Select(int.Parse).ToList();
+                var arms = conflict.Substring(conflict.IndexOf('[') + 1).TrimEnd(']').Split(',');
                 var set = Assert.Single(RewriteRules.All.Where(s => s.Name == name));
-                Assert.NotEmpty(set.Rules[indices[0]].PatternSource);
-                Assert.NotEmpty(set.Rules[indices[1]].PatternSource);
+                foreach (var arm in arms)
+                {
+                    var rule = int.TryParse(arm, out var index)
+                        ? set.Rules[index]
+                        : Assert.Single(set.Rules.Where(r => r.Name == arm));
+                    Assert.NotEmpty(rule.PatternSource);
+                }
                 Assert.NotEmpty(examples[conflict]);
             }
         }
